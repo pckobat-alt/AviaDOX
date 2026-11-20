@@ -1,0 +1,16 @@
+{
+  "appId": "com.aviadox.app",
+  "appName": "AviaDoX",
+  "webDir": "www",
+  "server": {
+    "iosScheme": "capacitor",
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "allowsLinkPreview": false,
+    "scrollEnabled": true,
+    "limitsNavigationsToAppBoundDomains": false,
+    "preferredContentMode": "mobile"
+  }
+}
