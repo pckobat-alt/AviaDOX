@@ -17,12 +17,12 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Depoyu indir
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Node.js kur
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
 
       - name: Capacitor bağımlılıklarını yükle ve iOS projesini oluştur
         run: |
@@ -30,14 +30,20 @@ jobs:
           if [ ! -d "ios" ]; then
             npx cap add ios
           fi
+          if [ -f "ios-config/AppDelegate.swift" ]; then
+            cp ios-config/AppDelegate.swift ios/App/App/AppDelegate.swift
+          fi
           npx cap sync ios
 
-      - name: Info.plist arka plan GPX izinlerini uygula
+      - name: Info.plist arka plan GPX ve çoklu bildirim izinlerini uygula
         run: |
           PLIST="ios/App/App/Info.plist"
           /usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string location" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:1 string remote-notification" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :NSSupportsLiveActivities true" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :NSSupportsLiveActivities bool true" "$PLIST"
           /usr/libexec/PlistBuddy -c "Set :NSLocationWhenInUseUsageDescription 'AviaDoX, Flight Log uçuş kaydını haritada göstermek ve GPX uçuş izini oluşturmak için konumunuzu kullanır.'" "$PLIST" || \
             /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 'AviaDoX, Flight Log uçuş kaydını haritada göstermek ve GPX uçuş izini oluşturmak için konumunuzu kullanır.'" "$PLIST"
           /usr/libexec/PlistBuddy -c "Set :NSLocationAlwaysAndWhenInUseUsageDescription 'AviaDoX, sıcak hava balonu uçuşu sırasında ekran kapalıyken veya uygulama arka plandayken GPX konum kaydına kesintisiz devam etmek için arka plan konum izni gerektirir.'" "$PLIST" || \
@@ -71,8 +77,7 @@ jobs:
           zip -qr AviaDoX-unsigned.ipa Payload
 
       - name: AviaDoX.ipa dosyasını indirilebilir artifact olarak yükle
-        if: ${{ inputs.signing_mode == 'unsigned' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: AviaDoX-iOS-IPA
           path: ios/App/AviaDoX-unsigned.ipa
