@@ -1,9 +1,14 @@
 <!-- ios/App/App/Info.plist içinde <dict> bloğunun sonuna ekleyin -->
-<!-- KRİTİK: iOS'ta ekran kapalıyken / arka planda GPX kaydının sürmesi için zorunlu anahtarlar -->
+<!-- KRİTİK: iOS'ta arka planda GPX konum kaydı + diğer uygulama push bildirimleri için zorunlu anahtarlar -->
 <key>UIBackgroundModes</key>
 <array>
   <string>location</string>
+  <string>remote-notification</string>
 </array>
+
+<!-- Opsiyonel: iOS 16.2+ Kilit Ekranı Live Activity ve Dynamic Island desteği -->
+<key>NSSupportsLiveActivities</key>
+<true/>
 
 <key>NSLocationWhenInUseUsageDescription</key>
 <string>AviaDoX, Flight Log uçuş kaydını haritada göstermek ve GPX uçuş izini oluşturmak için konumunuzu kullanır.</string>
