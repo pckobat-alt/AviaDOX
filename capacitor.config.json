@@ -12,5 +12,15 @@
     "scrollEnabled": true,
     "limitsNavigationsToAppBoundDomains": false,
     "preferredContentMode": "mobile"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_aviadox",
+      "iconColor": "#1d4ed8",
+      "sound": "default"
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    }
   }
 }

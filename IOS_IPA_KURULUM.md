@@ -1,11 +1,4 @@
-# AviaDoX iOS (.ipa) Derleme ve Arka Plan GPX Kurulum Rehberi
-
-## Neden doğrudan burada .ipa üretilemiyor?
-Apple `.ipa` paketleri yalnızca **macOS + Xcode + iOS SDK** ile derlenebilir ve iPhone'a yüklemek için bir **Apple Developer İmzalama Sertifikası** (veya AltStore/Sideloadly gibi bir imzalama aracı) gerekir. Ayrıca projenizin eksik kalan web dosyaları (`index.html`, `style.css`, `config.js`, `slot.js`, `icons/`) bu yüklemede yer almamaktadır.
-
-Bu paketteki tüm düzeltilmiş dosyalar ve otomatik macOS `.ipa` derleme iş akışı ile **Mac bilgisayarınız olmasa bile GitHub Actions üzerinden 5 dakikada `.ipa` çıktısı alabilirsiniz.**
-
----
+# AviaDoX iOS (.ipa) Derleme, Arka Plan GPX ve Kilit Ekranı Bildirim Rehberi
 
 ## 1. Klasör Yapısını Hazırlayın
 ```
@@ -13,39 +6,61 @@ aviadox-ios/
 ├── package.json
 ├── capacitor.config.json
 ├── .github/workflows/build-ipa.yml
+├── ios-config/
+│   ├── Info.plist.additions.xml
+│   ├── AppDelegate.swift
+│   └── FlightLiveActivity.swift   (opsiyonel: iOS 16.2+ Live Activity)
 └── www/
-    ├── index.html          (mevcut projenizden)
+    ├── index.html          (mevcut projenizden — <script src="notifications.js"></script> ekleyin)
     ├── style.css           (mevcut projenizden)
     ├── config.js           (mevcut projenizden — Supabase URL/Key)
     ├── slot.js             (mevcut projenizden)
     ├── icons/              (mevcut projenizden)
-    ├── app.js              (bu paketten — düzeltilmiş)
-    ├── flightlog.js        (bu paketten — iOS arka plan GPX düzeltilmiş)
+    ├── notifications.js    (bu paketten — Kilit ekranı GPX + çoklu bildirim yöneticisi)
+    ├── app.js              (bu paketten — düzeltilmiş + AVNOTIF entegreli)
+    ├── flightlog.js        (bu paketten — arka plan GPX + kilit ekranı bildirimi)
     ├── weather.js          (bu paketten — düzeltilmiş)
     ├── i18n.js             (bu paketten — iOS 13+ uyumlu)
     ├── privacy.js          (bu paketten — iOS arka plan bildirimi ekli)
     └── gizlilik.html       (bu paketten — düzeltilmiş)
 ```
 
-## 2. Seçenek A — Mac / Xcode ile Doğrudan İmzalı .ipa Üretme
+> **Önemli:** `www/index.html` içinde `app.js` ve `flightlog.js` satırlarının **üstüne** şu satırı ekleyin:
+> ```html
+> <script src="notifications.js"></script>
+> ```
+> (Eklemeyi unutsanız bile `flightlog.js` dahili yedek kodla kilit ekranı GPX bildirimini yine gösterir.)
+
+---
+
+## 2. Kilit Ekranı GPX Bildirimi ve Diğer Bildirimlerin Birlikte Çalışması
+
+Uygulamada birden fazla bildirim türü olduğu için **bildirim ID ve kanal izolasyonu** uygulandı:
+
+| Bildirim Türü | ID / Kanal | Davranış |
+|---|---|---|
+| **GPX Arka Plan Kaydı** | `ID: 9001` · `aviadox-gpx` | `Start` ile başlar, kilit ekranında sessizce her 30 sn'de bir aynı kartta (süre, irtifa, hız, yön°) güncellenir. `Stop` ile **yalnızca 9001 silinir**. |
+| **NOTAM Saha İhlali** | `ID: 9002` · `aviadox-notam` | Ekran kilitliyken NOTAM sahasına girilir/yaklaşılırsa sesli acil kilit ekranı uyarısı verir. |
+| **Evrak & Bakım Hatırlatma** | `ID: 9100–9199` · `aviadox-reminders` | Balon yıllık muayene ve evrakların 7 gün ve 1 gün öncesi 09:00 hatırlatması. |
+| **Slot Merkezi & Uzak Push** | APNs (`@capacitor/push-notifications`) | `AppDelegate.swift` + `UIBackgroundModes: remote-notification` ile diğer bildirimlerle çakışmadan kilit ekranında ve uygulama açıkken görünür. |
+
+---
+
+## 3. Mac / Xcode ile İmzalı .ipa Üretme
 ```bash
 npm install
 npx cap add ios
+cp ios-config/AppDelegate.swift ios/App/App/AppDelegate.swift
 npx cap sync ios
 ```
-1. `Info.plist.additions.xml` içindeki anahtarları `ios/App/App/Info.plist` dosyasının `<dict>` bloğuna ekleyin.
+1. `ios-config/Info.plist.additions.xml` içeriğini `ios/App/App/Info.plist` içindeki `<dict>` bloğuna ekleyin.
 2. `npx cap open ios` ile Xcode'u açın.
 3. **Signing & Capabilities** sekmesinden:
    - Apple Developer Team seçin, Bundle Identifier'ı (`com.aviadox.app`) belirleyin.
-   - **+ Capability > Background Modes > Location updates** kutucuğunu işaretleyin.
+   - **+ Capability > Background Modes** → **Location updates** VE **Remote notifications** işaretleyin.
+   - **+ Capability > Push Notifications** ekleyin (Slot Merkezi ve diğer uzak bildirimler için).
 4. Menüden **Product > Archive > Distribute App** adımlarıyla imzalı `.ipa` dosyasını dışa aktarın.
 
-## 3. Seçenek B — Mac Olmadan GitHub Actions ile .ipa Üretme
-1. Yukarıdaki klasör yapısını özel (Private) bir GitHub deposuna yükleyin.
-2. GitHub'da **Actions > Build AviaDoX iOS IPA > Run workflow** düğmesine basın.
-3. İşlem bitince **Artifacts** bölümünden `AviaDoX-unsigned.ipa` dosyasını indirin (Sideloadly / AltStore / Xcode ile imzalayıp iPhone'a kurabilirsiniz).
-
-## 4. iPhone'da Arka Plan GPX Test Kontrol Listesi
-- Uygulamayı açıp **Flight Log > Start** dediğinizde iOS konum iznini önce *"Uygulamayı Kullanırken İzin Ver"*, ardından sistem uyarısında **"Her Zaman İzin Ver"** (ve **Tam Konum: Açık**) olarak seçin.
-- Ekranı kilitleyin veya başka bir uygulamaya geçin — iPhone sol üst köşede **mavi konum göstergesi** görünmeye devam eder.
-- `flightlog.js` içinde arka plan konum callback'i her 15 saniyede bir GPX taslağını IndexedDB'ye yazar, her 5 saniyede bir canlı konum paylaşır ve ekran kapalıyken harita çizimini duraklatarak iOS'un uygulamayı bellekten kapatmasını önler.
+## 4. Mac Olmadan GitHub Actions ile .ipa Üretme
+1. Klasörü özel bir GitHub deposuna yükleyin.
+2. **Actions > Build AviaDoX iOS IPA > Run workflow** ile çalıştırın; **Artifacts** bölümünden `AviaDoX-unsigned.ipa` dosyasını indirin.
