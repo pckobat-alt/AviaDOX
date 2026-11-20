@@ -17,12 +17,12 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Depoyu indir
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Node.js kur
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Capacitor bağımlılıklarını yükle ve iOS projesini oluştur
         run: |
@@ -71,7 +71,8 @@ jobs:
           zip -qr AviaDoX-unsigned.ipa Payload
 
       - name: AviaDoX.ipa dosyasını indirilebilir artifact olarak yükle
-        uses: actions/upload-artifact@v4
+        if: ${{ inputs.signing_mode == 'unsigned' }}
+        uses: actions/upload-artifact@v5
         with:
           name: AviaDoX-iOS-IPA
           path: ios/App/AviaDoX-unsigned.ipa
