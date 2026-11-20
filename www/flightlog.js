@@ -1,7 +1,7 @@
 /* ===== AviaDoX Flight Log (Hata Ayıklanmış + iOS/Android Arka Plan GPX Destekli) ===== */
 const FL=(()=>{
 "use strict";
-const RET_DAYS=90,DAY=864e5,WARN_M=500,FIX_MAX_AGE=10000,EMA=0.3,DRAFT_MS=15000,MAX_ACC_M=150;
+const RET_DAYS=90,DAY=864e5,WARN_M=500,FIX_MAX_AGE=10000,EMA=0.3,DRAFT_MS=15000,NOTIF_MS=30000,MAX_ACC_M=150;
 const TILE="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 const isIOS=()=>/iPad|iPhone|iPod/.test(navigator.userAgent||"")||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
 
@@ -74,7 +74,7 @@ const isExpired=(f,now)=>f.createdAt<now-RET_DAYS*DAY;
 /* ---------- durum ---------- */
 function fresh(){return{co:null,root:null,map:null,sub:"map",status:"idle",fix:null,raw:null,cur:null,prevP:null,pts:[],t0:0,t1:0,now:0,follow:false,centered:false,err:"",
  kml:{polygons:[],lines:[],points:[]},kmlName:"",flights:[],last:null,fence:{level:"clear"},fenceKey:"clear",sim:false,watch:null,wgen:0,timer:null,purgeT:null,wake:null,
- note:"",noteT:null,persistent:true,simT:null,visH:null,hideH:null,alHtml:"",confirmId:null,confirmT:null,logoutArm:false,lastPurge:0,syncing:new Set(),syncErr:"",pendingGap:false,gapMsg:"",hidAt:0,gapSec:0,draft:null,draftT:0,pubT:0,share:true,peers:{},peerCh:null,peerT:null,locAsked:false,trimId:null,trimH:"",trimT:"",trimPts:null,trimSure:false}}
+ note:"",noteT:null,persistent:true,simT:null,visH:null,hideH:null,alHtml:"",confirmId:null,confirmT:null,logoutArm:false,lastPurge:0,syncing:new Set(),syncErr:"",pendingGap:false,gapMsg:"",hidAt:0,gapSec:0,draft:null,draftT:0,pubT:0,notifT:0,share:true,peers:{},peerCh:null,peerT:null,locAsked:false,trimId:null,trimH:"",trimT:"",trimPts:null,trimSure:false}}
 const Q=fresh();
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const canDel=f=>(typeof isAdmin==="function"&&isAdmin())||f.sim;
@@ -155,7 +155,44 @@ async function clearKml(){if(!isAdmin())return;try{const old=S.company.kml_path;
 function checkFence(){const f=Q.fix;if(!f){Q.fence={level:"clear"};return}const p=[f.lat,f.lon];let hit=null,near=null;
  for(const pg of Q.kml.polygons){if(pointInPolygon(p,pg)){hit=pg;break}let d=distToRingEdge(p,pg.outer);pg.holes.forEach(h=>{d=Math.min(d,distToRingEdge(p,h))});if(d<WARN_M&&(!near||d<near.d))near={pg,d}}
  const nx=hit?{level:"inside",zone:hit}:near?{level:"near",zone:near.pg,distance:Math.round(near.d)}:{level:"clear"};
- const key=nx.level+":"+(nx.zone?nx.zone.id:"");if(key!==Q.fenceKey){Q.fenceKey=key;if(nx.level!=="clear"&&navigator.vibrate){try{navigator.vibrate([300,100,300])}catch(e){}}}Q.fence=nx}
+ const key=nx.level+":"+(nx.zone?nx.zone.id:"");if(key!==Q.fenceKey){Q.fenceKey=key;if(nx.level!=="clear"){if(navigator.vibrate){try{navigator.vibrate([300,100,300])}catch(e){}}if(Q.status==="running"&&document.visibilityState==="hidden")pushNotamNotif(nx.level,nx.zone.name,nx.distance)}}Q.fence=nx}
+
+/* ---------- kilit ekranı GPX bildirimi (ID 9001/9002 — diğer uygulama bildirimlerine dokunmaz) ---------- */
+const GPX_NOTIF_ID=9001,NOTAM_NOTIF_ID=9002;
+function pushGpxNotif(askPerm){
+ if(Q.status!=="running")return;
+ const now=Date.now();
+ Q.notifT=now;
+ const course=Q.cur&&Q.cur.course!=null&&isFinite(Q.cur.course)?Q.cur.course:(Q.fix&&Q.fix.heading!=null&&isFinite(Q.fix.heading)&&Q.fix.heading>=0?Q.fix.heading:null);
+ const payload={startedAt:Q.t0,now,alt:Q.cur?Q.cur.ele:null,gs:Q.cur?Q.cur.gs:null,course,sim:Q.sim,callsign:callOn()};
+ if(typeof AVNOTIF!=="undefined"&&typeof AVNOTIF.showGpxStatus==="function"){AVNOTIF.showGpxStatus(payload,askPerm).catch(()=>{});return}
+ const LN=getNativePlugin("LocalNotifications");
+ if(!LN)return;
+ (async()=>{
+  try{
+   let p=await LN.checkPermissions();
+   if(p&&p.display!=="granted"&&askPerm)p=await LN.requestPermissions();
+   if(!p||p.display!=="granted")return;
+   const dur=fmtDur(Math.max(0,now-Q.t0)),alt=payload.alt!=null&&isFinite(payload.alt)?Math.round(payload.alt)+" m":"– m",gs=payload.gs!=null&&isFinite(payload.gs)?(payload.gs*3.6).toFixed(0)+" km/sa":"0 km/sa",hdg=course!=null?"Yön "+String(((Math.round(course)%360)+360)%360).padStart(3,"0")+"°":"Yön –°";
+   await LN.schedule({notifications:[{id:GPX_NOTIF_ID,title:"🔴 AviaDoX · GPX Kaydı Aktif"+(Q.sim?" [TEST]":""),body:`Arka planda konum kaydı sürüyor · Süre ${dur} · ${alt} · ${gs} · ${hdg}`,channelId:"aviadox_gpx",threadIdentifier:"aviadox-gpx",ongoing:true,autoCancel:false,silent:true,extra:{tab:"fl",type:"gpx"}}]});
+  }catch(_){}
+ })();
+}
+function clearGpxNotif(){
+ Q.notifT=0;
+ if(typeof AVNOTIF!=="undefined"&&typeof AVNOTIF.clearGpxStatus==="function"){AVNOTIF.clearGpxStatus().catch(()=>{});return}
+ const LN=getNativePlugin("LocalNotifications");
+ if(!LN)return;
+ const t=[{id:GPX_NOTIF_ID},{id:NOTAM_NOTIF_ID}];
+ try{LN.cancel({notifications:t}).catch(()=>{})}catch(_){}
+ try{if(LN.removeDeliveredNotifications)LN.removeDeliveredNotifications({notifications:t.map(x=>({id:x.id,tag:""}))}).catch(()=>{})}catch(_){}
+}
+function pushNotamNotif(level,zoneName,dist){
+ if(typeof AVNOTIF!=="undefined"&&typeof AVNOTIF.showNotamAlert==="function"){AVNOTIF.showNotamAlert(level,zoneName,dist).catch(()=>{});return}
+ const LN=getNativePlugin("LocalNotifications");
+ if(!LN)return;
+ LN.schedule({notifications:[{id:NOTAM_NOTIF_ID,title:level==="inside"?"⚠️ NOTAM Sahası İçindesiniz":"⚠️ NOTAM Sınırına Yaklaşıldı",body:level==="inside"?`${zoneName} kısıtlı sahası içindesiniz.`:`${zoneName} sınırına ${Math.round(dist||0)} m kaldı.`,channelId:"aviadox_notam",threadIdentifier:"aviadox-notam",extra:{tab:"fl",type:"notam"}}]}).catch(()=>{});
+}
 
 /* ---------- konum (iOS & Android Capacitor arka plan GPX motoru) ---------- */
 function geoMsg(e){return e&&e.code===1?"Konum izni verilmedi veya bu pencerede engelli. Tarayıcı/uygulama ayarlarından konuma izin verin. Gömülü pencerede engellenirse aşağıdaki Test konumunu kullanabilirsiniz.":e&&e.code===3?"Konum zaman aşımına uğradı, GPS sinyali bekleniyor.":"Konum alınamıyor (GPS sinyali yok veya cihaz desteklemiyor)."}
@@ -235,9 +272,10 @@ function onPos(pos){
    const p=makePoint(pos,lp);
    if(Q.pendingGap){p.gapBefore=true;Q.pendingGap=false}
    Q.pts.push(p);Q.cur=p;Q.now=now;
-   /* iOS arka planda setInterval durduğundan taslak kaydı ve canlı konum paylaşımı doğrudan konum callback'inde yürütülür. */
+   /* iOS arka planda setInterval durduğundan taslak kaydı, canlı konum paylaşımı ve kilit ekranı bildirimi doğrudan konum callback'inde yürütülür. */
    if(Q.pts.length>1&&now-Q.draftT>=DRAFT_MS)persistDraft(now);
    if(Q.share&&now-(Q.pubT||0)>=PUB_MS){Q.pubT=now;pubPos()}
+   if(now-(Q.notifT||0)>=NOTIF_MS)pushGpxNotif(false);
   }
  }
  Q.fix={lat:c.latitude,lon:c.longitude,acc:c.accuracy,heading:c.heading,speed:c.speed,alt:c.altitude,ts:now};Q.err="";
@@ -293,7 +331,7 @@ function start(){if(Q.status==="running")return;if(!Q.sim&&!locOk()){askLoc().th
  Q.pts=[];Q.cur=null;Q.prevP=null;Q.last=null;Q.pendingGap=false;Q.gapMsg="";Q.gapSec=0;Q.hidAt=0;Q.draft=null;Q.draftT=0;Q.t0=Date.now();Q.now=Q.t0;Q.status="running";Q.follow=true;Q.fenceKey="";
  /* Başlangıç noktasını hemen kaydet (özellikle kısa kalkışlarda ilk konum kaybolmasın) */
  if(Q.raw){const p0=makePoint({coords:Q.raw.coords,timestamp:Q.t0},null);Q.pts.push(p0);Q.cur=p0}
- checkFence();wakeOn();restartGeo(true);
+ checkFence();wakeOn();restartGeo(true);pushGpxNotif(true);
  Q.share=shareOn();Q.pubT=0;Q.timer=setInterval(tick,1000);if(Q.map){Q.map.center(Q.fix.lat,Q.fix.lon);Q.map.redraw()}ui()}
 function tick(){
  const now=Date.now(),raw=Q.raw;Q.now=now;
@@ -308,7 +346,7 @@ function tick(){
  if(Q.share&&!Q.sim&&now-(Q.pubT||0)>=PUB_MS){Q.pubT=now;pubPos()}
  if(document.visibilityState!=="hidden"){if(Q.map)Q.map.redraw();ui()}
 }
-async function stop(){if(Q.status!=="running")return;clearInterval(Q.timer);Q.timer=null;try{if(Q.wake)await Q.wake.release()}catch(e){}Q.wake=null;Q.t1=Date.now();Q.status="stopped";Q.follow=false;restartGeo(false);pubClear();
+async function stop(){if(Q.status!=="running")return;clearInterval(Q.timer);Q.timer=null;try{if(Q.wake)await Q.wake.release()}catch(e){}Q.wake=null;Q.t1=Date.now();Q.status="stopped";Q.follow=false;clearGpxNotif();restartGeo(false);pubClear();
  const pts=Q.pts;await dbDel("meta","draft");if(pts.length<2){note("Uçuş çok kısa: kaydedilecek yeterli veri yok (en az 2 nokta).");ui();return}
  await finalize(pts,Q.t0,Q.t1,Q.sim)}
 async function finalize(pts,t0,t1,sim){
@@ -482,6 +520,7 @@ function init(co){Q.co=co;dbp=null;mem.flights.clear();mem.meta.clear();Q.persis
   if(document.visibilityState==="hidden"){
    if(Q.status==="running"){
     persistDraft(Date.now());
+    pushGpxNotif(false);
     if(!BG)Q.hidAt=Date.now();
    }
    return;
@@ -502,7 +541,7 @@ function init(co){Q.co=co;dbp=null;mem.flights.clear();mem.meta.clear();Q.persis
  window.addEventListener("pagehide",Q.hideH);
  refreshFlights()}
 function mount(host,co){if(!host)return;if(Q.co&&Q.co!==co)reset();if(!Q.co)init(co);if(!Q.root)build();host.appendChild(Q.root);peersStart();if(locOk())startGeo(Q.status==="running");else if(!Q.locAsked){Q.locAsked=true;askLoc().then(ok=>{if(ok)startGeo(false)})}showSub();ui();requestAnimationFrame(()=>{if(Q.map)Q.map.resize()})}
-function reset(){peersStop();if(Q.status==="running")pubClear();stopGeo();stopSim();clearInterval(Q.timer);clearInterval(Q.purgeT);clearTimeout(Q.noteT);clearTimeout(Q.confirmT);if(Q.wake){try{Q.wake.release().catch(()=>{})}catch(e){}}if(Q.visH)document.removeEventListener("visibilitychange",Q.visH);if(Q.hideH)window.removeEventListener("pagehide",Q.hideH);if(Q.map)Q.map.destroy();if(Q.root)Q.root.remove();dbp=null;Object.assign(Q,fresh())}
+function reset(){peersStop();if(Q.status==="running")pubClear();clearGpxNotif();stopGeo();stopSim();clearInterval(Q.timer);clearInterval(Q.purgeT);clearTimeout(Q.noteT);clearTimeout(Q.confirmT);if(Q.wake){try{Q.wake.release().catch(()=>{})}catch(e){}}if(Q.visH)document.removeEventListener("visibilitychange",Q.visH);if(Q.hideH)window.removeEventListener("pagehide",Q.hideH);if(Q.map)Q.map.destroy();if(Q.root)Q.root.remove();dbp=null;Object.assign(Q,fresh())}
 function teardown(){if(!Q.co)return Promise.resolve();if(Q.status==="running")return stop().then(reset,reset);reset();return Promise.resolve()}
 function armLogout(){if(Q.logoutArm)return true;Q.logoutArm=true;setTimeout(()=>{Q.logoutArm=false},8000);note("Uçuş kaydı sürüyor. Çıkış yaparsan uçuş durdurulup kaydedilir. Çıkmak için Çıkış'a tekrar bas.",8000);return false}
 return{mount,teardown,running:()=>Q.status==="running",armLogout}

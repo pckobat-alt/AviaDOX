@@ -319,6 +319,16 @@ async function boot(user) {
   S.company = co;
   if ("consent_version" in pr && ("explicit_version" in pr ? (pr.consent_version !== POLICY_VER() || pr.explicit_version !== POLICY_VER()) : pr.consent_version !== POLICY_VER())) { consentView(); return; }
   await loadAll();
+  if (typeof AVNOTIF !== "undefined") {
+    AVNOTIF.init({
+      onTap: (tab) => {
+        if (!S.user || !tab) return;
+        S.tab = tab; S.menu = 0;
+        render();
+      },
+    }).catch(() => {});
+    AVNOTIF.syncExpiryReminders(S).catch(() => {});
+  }
   await loadLogo();
   await loadAvatar().catch(() => {});
   if (canManageUsers()) await loadAvatars().catch(() => {});
@@ -329,6 +339,10 @@ async function boot(user) {
 async function logout() {
   if (typeof FL !== "undefined" && FL.running && FL.running() && !FL.armLogout()) { S.tab = "fl"; S.menu = 0; render(); return; }
   if (typeof FL !== "undefined" && FL.teardown) await FL.teardown().catch(() => {});
+  if (typeof AVNOTIF !== "undefined") {
+    await AVNOTIF.clearGpxStatus().catch(() => {});
+    await AVNOTIF.clearReminders().catch(() => {});
+  }
   await sb.auth.signOut().catch(() => {});
   resetSessionState();
   loginView();
@@ -341,6 +355,10 @@ async function initApp() {
   sb.auth.onAuthStateChange(ev => {
     if (ev === "SIGNED_OUT" && S.user) {
       if (typeof FL !== "undefined" && FL.teardown) Promise.resolve(FL.teardown()).catch(() => {});
+      if (typeof AVNOTIF !== "undefined") {
+        AVNOTIF.clearGpxStatus().catch(() => {});
+        AVNOTIF.clearReminders().catch(() => {});
+      }
       resetSessionState();
       loginView();
     }
