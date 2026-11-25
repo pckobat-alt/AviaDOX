@@ -117,9 +117,10 @@ Uygulama kilit ekranında kayıt aktifken şu biçimde sessiz bir bildirim göst
 
 ---
 
-## Çevrimdışı Giriş ve Hareketli GIF Logosu
+## Çevrimdışı Giriş, Otomatik GPX Senkronu ve Hareketli GIF Logosu
 
-- **İnternetsiz Giriş:** `npm run prepare:web` komutu Supabase kütüphanesini `www/vendor/supabase.umd.js` olarak uygulama içine gömer. İnternet yokken:
-  1. Daha önce giriş yapmış kullanıcılar önbellekteki çalışma alanı verileriyle otomatik açılır.
-  2. İlk kez internet olmadan açan kullanıcılar giriş ekranındaki **"İnternetsiz Devam Et (Çevrimdışı Flight Log)"** butonuyla doğrudan GPX kaydı başlatabilir. Kayıtlar cihazdaki IndexedDB'de saklanır ve internet gelince otomatik senkronize edilir.
+- **İnternetsiz Kullanıcı Adı / Parola Girişi:** `npm run prepare:web` komutu Supabase kütüphanesini `www/vendor/supabase.umd.js` olarak paketler.
+  1. İnternet varken yapılan ilk girişte çalışma alanı önbelleği ve kullanıcıya özel tuzlu PBKDF2-SHA256 parola doğrulayıcısı (düz metin parola saklanmadan) cihaza kaydedilir.
+  2. iPhone/Android uçak modundayken uygulama `DOMContentLoaded` + zaman aşımı korumasıyla beklemeden açılır; aktif oturum varsa doğrudan Flight Log'u açar, giriş ekranındaysanız kayıtlı kullanıcı adı ve parolanızla internetsiz giriş yapabilirsiniz.
+  3. İnternet bağlantısı geri geldiğinde (`online` veya uygulama öne alındığında) cihazdaki tüm bekleyen GPX uçuş kayıtları (acil misafir modunda kaydedilenler dahil) otomatik olarak sunucuya yüklenir.
 - **GIF Açılış Logosu:** `www/splash.gif` dosyası uygulama açılırken animasyonlu tam ekran açılış katmanı olarak gösterilir. Kendi özel logonuzun GIF dosyasını aynı adla (`www/splash.gif`) değiştirmeniz yeterlidir.

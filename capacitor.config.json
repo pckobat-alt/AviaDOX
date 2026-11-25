@@ -29,7 +29,7 @@
       "showSpinner": false
     },
     "LocalNotifications": {
-      "smallIcon": "ic_stat_icon_config_sample",
+      "smallIcon": "ic_stat_aviadox",
       "iconColor": "#c95b1e",
       "sound": "default"
     },
