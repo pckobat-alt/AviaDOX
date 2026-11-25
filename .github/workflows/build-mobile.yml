@@ -103,7 +103,7 @@ jobs:
 
   build-ios-ipa:
     name: iOS IPA Derle (macOS + Xcode)
-    runs-on: macos-15
+    runs-on: macos-latest
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
