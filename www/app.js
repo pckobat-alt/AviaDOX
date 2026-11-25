@@ -963,7 +963,7 @@ function render() {
   const offBar = S.offline
     ? `<div class="offline-bar"><span>📡 Çevrimdışı mod${S.offlineGuest ? " (Flight Log)" : " (önbellek)"}</span><button onclick="tryReconnect()">↻ Bağlan</button></div>`
     : "";
-  const head = `<div class="cn"><span class="cb">AviaDoX</span><span>🏢 ${esc(S.company.name)}</span></div>${offBar}<div class="top"><button class="hb" onclick="S.menu=1;render()">☰</button><div style="flex:1"><h1>${TITLES[S.tab]}</h1><div class="mu">Hoş geldin, ${esc(S.profile.full_name || S.user.email)}${isMgr() ? " · " + ROLE_NAMES[myRole()] : ""}</div></div><button class="sec" onclick="logout()">${S.offlineGuest ? "Giriş" : "Çıkış"}</button></div>`;
+  const head = `<header class="app-header"><div class="app-header-in"><div class="cn"><span class="cb">AviaDoX</span><span>🏢 ${esc(S.company.name)}</span></div>${offBar}<div class="top"><button class="hb" onclick="S.menu=1;render()">☰</button><div style="flex:1;min-width:0"><h1>${TITLES[S.tab]}</h1><div class="mu">Hoş geldin, ${esc(S.profile.full_name || S.user.email)}${isMgr() ? " · " + ROLE_NAMES[myRole()] : ""}</div></div><button class="sec" onclick="logout()">${S.offlineGuest ? "Giriş" : "Çıkış"}</button></div></div></header>`;
   let b = "";
   if (S.tab === "dash") b = dashView();
   else if (S.tab === "bk") b = S.bal ? balView() : bkView();
@@ -976,7 +976,7 @@ function render() {
   else if (S.tab === "ak") b = setView();
   else if (S.tab === "pe") b = peView();
   else b = coView();
-  $(`${sideNav()}<div class="wrap">${head}${b}</div>${S.menu ? nav() : ""}`);
+  $(`${sideNav()}${head}<main class="wrap app-main">${b}</main>${S.menu ? nav() : ""}`);
   document.body.classList.add("hasside");
   if (S.tab === "sm" && typeof SLOT !== "undefined") SLOT.mount(document.getElementById("smhost"));
   if (S.tab === "wx" && typeof WX !== "undefined") WX.mount(document.getElementById("wxhost"));
