@@ -28,6 +28,7 @@ jobs:
         run: |
           npm install
           npm run prepare:web
+          test -s www/vendor/supabase.umd.js
 
       - name: Android projesini oluştur ve senkronize et
         run: |
@@ -36,20 +37,32 @@ jobs:
           fi
           npx cap sync android
 
-      - name: AndroidManifest.xml arka plan GPX ve bildirim izinlerini uygula
+      - name: Android SDK yolu, bildirim ikonu ve Manifest birleştirme kurallarını uygula
         run: |
+          SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -n "$SDK_DIR" ]; then
+            echo "sdk.dir=$SDK_DIR" > android/local.properties
+          fi
           node -e '
             const fs = require("fs");
+            fs.mkdirSync("android/app/src/main/res/drawable", { recursive: true });
+            const iconXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
+                android:width="24dp"
+                android:height="24dp"
+                android:viewportWidth="24"
+                android:viewportHeight="24"
+                android:tint="#FFFFFF">
+                <path
+                    android:fillColor="#FFFFFFFF"
+                    android:pathData="M12,2C7.58,2 4,5.58 4,10c0,3.54 2.29,6.53 5.47,7.59L10.5,20h3l1.03,-2.41C17.71,16.53 20,13.54 20,10c0,-4.42 -3.58,-8 -8,-8zM10,21h4v1.5c0,0.28 -0.22,0.5 -0.5,0.5h-3c-0.28,0 -0.5,-0.22 -0.5,-0.5V21z"/>
+            </vector>\n`;
+            fs.writeFileSync("android/app/src/main/res/drawable/ic_stat_aviadox.xml", iconXml, "utf8");
+
             const p = "android/app/src/main/AndroidManifest.xml";
             let xml = fs.readFileSync(p, "utf8");
-
             if (!xml.includes("xmlns:tools=")) {
-              xml = xml.replace(
-                "<manifest",
-                "<manifest xmlns:tools=\"http://schemas.android.com/tools\""
-              );
+              xml = xml.replace("<manifest ", `<manifest xmlns:tools="http://schemas.android.com/tools" `);
             }
-
             const perms = [
               "android.permission.INTERNET",
               "android.permission.ACCESS_NETWORK_STATE",
@@ -61,36 +74,26 @@ jobs:
               "android.permission.POST_NOTIFICATIONS",
               "android.permission.WAKE_LOCK"
             ];
-
             for (const perm of perms) {
               if (!xml.includes(perm)) {
-                xml = xml.replace(
-                  "<application",
-                  `    <uses-permission android:name="${perm}" />\n    <application`
-                );
+                xml = xml.replace("<application", `    <uses-permission android:name="${perm}" />\n    <application`);
               }
             }
-
-            const svcLine = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:replace="android:exported" />`;
-
-            if (xml.includes("BackgroundGeolocationService")) {
-              xml = xml.replace(
-                /<service[^>]*com\.equimaps\.capacitor_background_geolocation\.BackgroundGeolocationService[^>]*\/>/,
-                svcLine
-              );
-            } else {
-              xml = xml.replace("</application>", `${svcLine}\n    </application>`);
+            if (!xml.includes("BackgroundGeolocationService")) {
+              const svc = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:node="merge" tools:replace="android:exported" />\n`;
+              xml = xml.replace("</application>", svc + "    </application>");
             }
-
             fs.writeFileSync(p, xml, "utf8");
-            console.log("AndroidManifest.xml guncellendi.");
+            console.log("AndroidManifest.xml ve ic_stat_aviadox.xml hazirlandi.");
           '
 
       - name: Android Debug APK derle
+        working-directory: ./android
+        env:
+          ORG_GRADLE_PROJECT_jvmargs: "-Xmx4g -Dfile.encoding=UTF-8"
         run: |
-          cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Android APK dosyasını artifact olarak yükle
         uses: actions/upload-artifact@v4
@@ -114,6 +117,7 @@ jobs:
         run: |
           npm install
           npm run prepare:web
+          test -s www/vendor/supabase.umd.js
 
       - name: iOS projesini oluştur, AppDelegate ve Info.plist uygula
         run: |
