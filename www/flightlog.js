@@ -131,6 +131,98 @@ async function purgeRemote(){
  const r2=await sb.from("flights").delete().in("id",data.map(x=>x.id));if(r2.error)throw r2.error;
 }
 async function purge(){const now=Date.now();const old=(await dbAll("flights")).filter(f=>isExpired(f,now));await Promise.all(old.map(f=>dbDel("flights",f.id)));return old.length}
+function openNamedDB(name){
+ return new Promise((res,rej)=>{
+  try{
+   const r=indexedDB.open(name,1);
+   r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains("flights"))d.createObjectStore("flights",{keyPath:"id"});if(!d.objectStoreNames.contains("meta"))d.createObjectStore("meta",{keyPath:"key"})};
+   r.onsuccess=()=>res(r.result);
+   r.onerror=()=>rej(r.error||new Error("idb"));
+   r.onblocked=()=>rej(new Error("blocked"));
+  }catch(e){rej(e)}
+ });
+}
+async function dbAllNamed(name,store){
+ const d=await openNamedDB(name);
+ try{
+  return await new Promise((res,rej)=>{const t=d.transaction(store,"readonly");const rq=t.objectStore(store).getAll();t.oncomplete=()=>res(rq.result||[]);t.onerror=t.onabort=()=>rej(t.error||new Error("tx"))});
+ }finally{try{d.close()}catch(_){}}
+}
+async function dbPutNamed(name,store,val){
+ const d=await openNamedDB(name);
+ try{
+  return await new Promise((res,rej)=>{const t=d.transaction(store,"readwrite");t.objectStore(store).put(val);t.oncomplete=()=>res();t.onerror=t.onabort=()=>rej(t.error||new Error("tx"))});
+ }finally{try{d.close()}catch(_){}}
+}
+async function dbDelNamed(name,store,key){
+ const d=await openNamedDB(name);
+ try{
+  return await new Promise((res,rej)=>{const t=d.transaction(store,"readwrite");t.objectStore(store).delete(key);t.oncomplete=()=>res();t.onerror=t.onabort=()=>rej(t.error||new Error("tx"))});
+ }finally{try{d.close()}catch(_){}}
+}
+async function uploadFlightRecord(rec,co,uid){
+ const gzb=await gzip(rec.gpx),path=`${co}/flights/${rec.id}${gzb?".gpx.gz":".gpx"}`,blob=gzb||new Blob([rec.gpx],{type:"application/gpx+xml"});
+ const up=await sb.storage.from("documents").upload(path,blob,{contentType:gzb?"application/gzip":"application/octet-stream"});
+ if(up.error&&!/already exists|duplicate/i.test(up.error.message||""))throw up.error;
+ const ins=await sb.from("flights").insert({id:rec.id,company_id:co,pilot_user:uid,pilot_name:rec.pilotName||pilotName(),name:rec.name,started_at:new Date(rec.startedAt).toISOString(),ended_at:new Date(rec.endedAt).toISOString(),duration_sec:rec.durationSec,max_alt:rec.maxAlt,distance_m:rec.distanceM,point_count:rec.pointCount,sim:false,file_path:path});
+ if(ins.error&&ins.error.code!=="23505")throw ins.error;
+ return path;
+}
+async function syncPending(targetCo,targetUid){
+ const co=targetCo||(typeof S!=="undefined"?S.co:null);
+ const uid=targetUid||(typeof S!=="undefined"&&S.user?S.user.id:null);
+ if(!co||!uid||co==="offline"||uid==="offline"||!isOnlineMode())return{syncedCount:0,failedCount:0,remainingCount:0};
+ const userDb="aerodox-fl-"+co+"-"+uid;
+ const guestDb="aerodox-fl-offline-offline";
+ let syncedCount=0,failedCount=0;
+ try{
+  // 1) Acil çevrimdışı misafir modunda kaydedilen uçuşları gerçek hesaba aktar ve yükle
+  let guestList=[];
+  try{guestList=await dbAllNamed(guestDb,"flights")}catch(_){}
+  for(const g of guestList){
+   if(!g||!g.gpx)continue;
+   if(Q.syncing.has(g.id))continue;
+   Q.syncing.add(g.id);
+   try{
+    const rec={...g,pilotName:pilotName()||g.pilotName};
+    const path=await uploadFlightRecord(rec,co,uid);
+    rec.synced=true;rec.filePath=path;
+    await dbPutNamed(userDb,"flights",rec);
+    await dbDelNamed(guestDb,"flights",g.id);
+    syncedCount++;
+   }catch(e){Q.syncErr=errMsg(e);failedCount++}finally{Q.syncing.delete(g.id)}
+  }
+  // 2) Kullanıcının kendi cihaz DB'sindeki bekleyen tüm uçuşları yükle
+  let locList=[];
+  try{locList=await dbAllNamed(userDb,"flights")}catch(_){}
+  for(const l of locList){
+   if(!l||l.synced||!l.gpx)continue;
+   if(Q.syncing.has(l.id))continue;
+   Q.syncing.add(l.id);
+   try{
+    const path=await uploadFlightRecord(l,co,uid);
+    l.synced=true;l.filePath=path;Q.syncErr="";
+    await dbPutNamed(userDb,"flights",l);
+    syncedCount++;
+   }catch(e){Q.syncErr=errMsg(e);failedCount++}finally{Q.syncing.delete(l.id)}
+  }
+ }catch(e){Q.syncErr=errMsg(e)}
+ if(Q.co===co&&Q.root&&Q.root.isConnected){try{await refreshFlights()}catch(_){}}
+ const rem=await pendingCount(co,uid);
+ return{syncedCount,failedCount,remainingCount:rem};
+}
+async function pendingCount(targetCo,targetUid){
+ const co=targetCo||(typeof S!=="undefined"?S.co:null);
+ const uid=targetUid||(typeof S!=="undefined"&&S.user?S.user.id:null);
+ let n=0;
+ const dbs=new Set();
+ if(co&&uid)dbs.add("aerodox-fl-"+co+"-"+uid);
+ dbs.add("aerodox-fl-offline-offline");
+ for(const name of dbs){
+  try{const arr=await dbAllNamed(name,"flights");n+=arr.filter(x=>x&&!x.synced).length}catch(_){}
+ }
+ return n;
+}
 async function refreshFlights(){
  await purge();const loc=await dbAll("flights");let remote=[],ok=false;
  if(isOnlineMode()){
@@ -690,5 +782,5 @@ function reset(){
 }
 function teardown(){if(!Q.co)return Promise.resolve();if(Q.status==="running")return stop().then(reset,reset);reset();return Promise.resolve()}
 function armLogout(){if(Q.logoutArm)return true;Q.logoutArm=true;setTimeout(()=>{Q.logoutArm=false},8000);note("Uçuş kaydı sürüyor. Çıkış yaparsan uçuş durdurulup kaydedilir. Çıkmak için Çıkış'a tekrar bas.",8000);return false}
-return{mount,teardown,running:()=>Q.status==="running",armLogout};
+return{mount,teardown,running:()=>Q.status==="running",armLogout,syncPending,pendingCount};
 })();

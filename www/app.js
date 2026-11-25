@@ -1,12 +1,33 @@
-/* ===== AviaDoX: uygulama (Supabase + Çevrimdışı Mod + Mobil Bildirim Entegrasyonu) ===== */
+/* ===== AviaDoX: uygulama (Supabase + Güvenli Çevrimdışı Giriş + Otomatik GPX Senkronu + Mobil Bildirimler) ===== */
 const sb = (typeof supabase !== "undefined" && typeof AERODOX !== "undefined")
   ? supabase.createClient(AERODOX.SUPABASE_URL, AERODOX.SUPABASE_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: typeof navigator === "undefined" ? true : navigator.onLine !== false,
+        detectSessionInUrl: false,
+      },
     })
   : null;
 const BUCKET = "documents";
 const OFFLINE_CACHE_KEY = "aviadox-offline-cache-v1";
+const OFFLINE_SNAP_PREFIX = "aviadox-offline-snap-v1:";
+const OFFLINE_AUTH_KEY = "aviadox-offline-auth-v1";
+const OFFLINE_LAST_USER_KEY = "aviadox-last-username-v1";
+const OFFLINE_SIGNED_OUT_KEY = "aviadox-signed-out-v1";
 const SPLASH_START = Date.now();
+let _reconnecting = false;
+
+function withTimeout(promise, ms, label) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, rej) => {
+      timer = setTimeout(() => rej(new Error(label || "İnternet bağlantısı zaman aşımına uğradı.")), ms);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 const dayN = d => {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ""));
@@ -151,6 +172,114 @@ async function fetchAll(mk) {
   return out;
 }
 
+/* ---------- cihaz içi güvenli çevrimdışı kimlik doğrulama (PBKDF2-SHA256 — düz metin parola saklanmaz) ---------- */
+function normUserKey(u) {
+  return String(u || "").trim().toLowerCase();
+}
+function bytesToHex(bytes) {
+  return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+}
+function hexToBytes(hex) {
+  const s = String(hex || "");
+  const out = new Uint8Array(Math.floor(s.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16) || 0;
+  return out;
+}
+function constEq(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+async function deriveOfflineHash(password, saltHex, iterations) {
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    throw new Error("Bu cihazda güvenli özetleme desteklenmiyor.");
+  }
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(String(password)), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: hexToBytes(saltHex), iterations: iterations || 120000 },
+    key,
+    256
+  );
+  return bytesToHex(new Uint8Array(bits));
+}
+function readOfflineAuthList() {
+  try {
+    const raw = localStorage.getItem(OFFLINE_AUTH_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) {
+    return [];
+  }
+}
+function writeOfflineAuthList(arr) {
+  try {
+    localStorage.setItem(OFFLINE_AUTH_KEY, JSON.stringify(arr || []));
+  } catch (_) {}
+}
+async function saveOfflineCredential(username, email, password, uid, co) {
+  if (!uid || !password) return;
+  try {
+    const salt = new Uint8Array(16);
+    crypto.getRandomValues(salt);
+    const saltHex = bytesToHex(salt);
+    const iter = 120000;
+    const hash = await deriveOfflineHash(password, saltHex, iter);
+    const uNorm = normUserKey(username);
+    const eNorm = normUserKey(email);
+    const shortU = eNorm.includes("@") ? eNorm.split("@")[0] : uNorm;
+    const list = readOfflineAuthList().filter(x => x && x.uid !== uid);
+    list.push({ uid, co: co || null, u: uNorm || shortU, shortU, email: eNorm, salt: saltHex, iter, hash, savedAt: Date.now() });
+    writeOfflineAuthList(list);
+    if (uNorm || shortU) {
+      try { localStorage.setItem(OFFLINE_LAST_USER_KEY, uNorm || shortU); } catch (_) {}
+    }
+  } catch (_) {}
+}
+function updateOfflineCredentialCompany(uid, co) {
+  if (!uid || !co) return;
+  try {
+    const list = readOfflineAuthList();
+    let changed = false;
+    for (const r of list) {
+      if (r && r.uid === uid && r.co !== co) { r.co = co; changed = true; }
+    }
+    if (changed) writeOfflineAuthList(list);
+  } catch (_) {}
+}
+async function verifyOfflineCredential(username, password) {
+  const key = normUserKey(username);
+  if (!key || !password) return { status: "empty" };
+  const list = readOfflineAuthList();
+  const domain = (typeof AERODOX !== "undefined" && AERODOX.AUTH_DOMAIN) ? String(AERODOX.AUTH_DOMAIN).toLowerCase() : "";
+  const fullEmail = key.includes("@") ? key : (domain ? key + "@" + domain : key);
+  const rec = list.find(x => x && (x.u === key || x.shortU === key || x.email === key || x.email === fullEmail));
+  if (!rec) return { status: "not_found" };
+  try {
+    const calc = await deriveOfflineHash(password, rec.salt, rec.iter || 120000);
+    if (constEq(calc, rec.hash)) return { status: "ok", rec };
+    return { status: "bad_password" };
+  } catch (_) {
+    return { status: "error" };
+  }
+}
+function clearOfflineCredential(uid) {
+  try {
+    if (!uid) {
+      localStorage.removeItem(OFFLINE_AUTH_KEY);
+      localStorage.removeItem(OFFLINE_LAST_USER_KEY);
+      return;
+    }
+    const list = readOfflineAuthList().filter(x => x && x.uid !== uid);
+    writeOfflineAuthList(list);
+  } catch (_) {}
+}
+function hasOfflineCredential(uid) {
+  const list = readOfflineAuthList();
+  return uid ? list.some(x => x && x.uid === uid) : list.length > 0;
+}
+
 /* ---------- çevrimdışı oturum önbelleği ---------- */
 function saveOfflineSnapshot() {
   if (!S.user || !S.company || S.offlineGuest) return;
@@ -170,11 +299,21 @@ function saveOfflineSnapshot() {
       bdocs: S.bdocs,
       camoCos: S.camoCos,
     };
-    localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify(snap));
+    const json = JSON.stringify(snap);
+    localStorage.setItem(OFFLINE_CACHE_KEY, json);
+    localStorage.setItem(OFFLINE_SNAP_PREFIX + S.user.id, json);
+    updateOfflineCredentialCompany(S.user.id, S.co);
   } catch (_) {}
 }
 function readOfflineSnapshot(uid) {
   try {
+    if (uid) {
+      const per = localStorage.getItem(OFFLINE_SNAP_PREFIX + uid);
+      if (per) {
+        const s = JSON.parse(per);
+        if (s && s.user && s.company) return s;
+      }
+    }
     const raw = localStorage.getItem(OFFLINE_CACHE_KEY);
     if (!raw) return null;
     const snap = JSON.parse(raw);
@@ -185,10 +324,13 @@ function readOfflineSnapshot(uid) {
     return null;
   }
 }
-function clearOfflineSnapshot() {
-  try { localStorage.removeItem(OFFLINE_CACHE_KEY); } catch (_) {}
+function clearOfflineSnapshot(uid) {
+  try {
+    if (uid) localStorage.removeItem(OFFLINE_SNAP_PREFIX + uid);
+    localStorage.removeItem(OFFLINE_CACHE_KEY);
+  } catch (_) {}
 }
-function bootFromSnapshot(snap) {
+function bootFromSnapshot(snap, fromLogin) {
   S.user = snap.user;
   S.profile = snap.profile;
   S.co = snap.co;
@@ -209,14 +351,17 @@ function bootFromSnapshot(snap) {
   S.tab = isCamo() ? "cm" : "fl";
   S.menu = 0; S.person = 0; S.pv = 0; S.bal = null; S.cmCo = null; S.cmBal = null;
   S.month = fd(new Date()).slice(0, 7);
+  try { localStorage.removeItem(OFFLINE_SIGNED_OUT_KEY); } catch (_) {}
   render();
   hideSplash();
-  toast("Çevrimdışı modda açıldı. Flight Log (GPX) tam çalışır.");
+  toast(fromLogin
+    ? "Çevrimdışı giriş yapıldı. İnternet gelince GPX kayıtları otomatik senkronize edilir."
+    : "Çevrimdışı modda açıldı. Flight Log (GPX) tam çalışır.");
 }
 function enterOfflineMode() {
   const snap = readOfflineSnapshot();
   if (snap) {
-    bootFromSnapshot(snap);
+    bootFromSnapshot(snap, false);
     return;
   }
   S.user = { id: "offline", email: "çevrimdışı" };
@@ -231,26 +376,64 @@ function enterOfflineMode() {
   S.menu = 0; S.bal = null;
   render();
   hideSplash();
-  toast("İnternetsiz Flight Log modu açıldı.");
+  toast("İnternetsiz Flight Log modu açıldı. İnternet gelince giriş yaptığınızda kayıtlar aktarılır.");
 }
-async function tryReconnect() {
+async function syncOfflineFlightsNow(showEmptyToast) {
+  if (!sb || !navigator.onLine || S.offline || S.offlineGuest || !S.user || !S.co) return { syncedCount: 0, failedCount: 0, remainingCount: 0 };
+  if (typeof FL === "undefined" || typeof FL.syncPending !== "function") return { syncedCount: 0, failedCount: 0, remainingCount: 0 };
+  const res = await FL.syncPending(S.co, S.user.id);
+  if (res.syncedCount > 0) {
+    toast(`${res.syncedCount} çevrimdışı uçuş kaydı sunucu ile senkronize edildi.`);
+  } else if (showEmptyToast) {
+    toast(res.failedCount > 0 ? "Bazı uçuş kayıtları senkronize edilemedi; tekrar denenecek." : "Bekleyen çevrimdışı uçuş kaydı yok.");
+  }
+  return res;
+}
+async function autoReconnectAndSync(manual) {
+  if (_reconnecting) return;
   if (!sb || !navigator.onLine) {
-    toast("Hâlâ internet bağlantısı yok.", true);
+    if (manual) toast("Hâlâ internet bağlantısı yok.", true);
     return;
   }
+  _reconnecting = true;
   try {
-    const { data } = await sb.auth.getSession();
-    if (data && data.session && data.session.user) {
-      await bootWith(data.session.user);
-      toast("Bağlantı yenilendi");
-    } else {
-      S.offline = false;
-      S.offlineGuest = false;
-      loginView("Çevrimiçi giriş yapabilirsiniz.");
+    try { sb.auth.startAutoRefresh(); } catch (_) {}
+    const { data } = await withTimeout(sb.auth.getSession(), 5000, "Oturum doğrulaması zaman aşımına uğradı.");
+    const sessUser = data && data.session && data.session.user;
+    if (sessUser) {
+      const running = typeof FL !== "undefined" && FL.running && FL.running();
+      if (running && S.user && S.user.id === sessUser.id) {
+        S.offline = false;
+        S.offlineGuest = false;
+        const bar = document.querySelector(".offline-bar");
+        if (bar) bar.remove();
+        await syncOfflineFlightsNow(false);
+        if (manual) toast("Bağlantı yenilendi (aktif GPX kaydı kesilmedi).");
+      } else {
+        const keepTab = S.tab;
+        await bootWith(sessUser, keepTab);
+        if (manual) toast("Bağlantı yenilendi ve kayıtlar senkronize edildi.");
+      }
+    } else if (S.offline) {
+      const pending = (typeof FL !== "undefined" && FL.pendingCount) ? await FL.pendingCount(S.co, S.user && S.user.id) : 0;
+      if (manual) {
+        S.offline = false;
+        S.offlineGuest = false;
+        loginView(pending > 0
+          ? `İnternet bağlandı. Bekleyen ${pending} uçuş kaydını sunucuya aktarmak için giriş yapın.`
+          : "İnternet bağlandı. Çevrimiçi giriş yapabilirsiniz.");
+      } else if (pending > 0) {
+        toast(`İnternet geldi: ${pending} bekleyen uçuş kaydını aktarmak için üstteki Bağlan düğmesine dokunun.`);
+      }
     }
   } catch (e) {
-    toast(errMsg(e), true);
+    if (manual) toast(errMsg(e), true);
+  } finally {
+    _reconnecting = false;
   }
+}
+async function tryReconnect() {
+  await autoReconnectAndSync(true);
 }
 
 /* ---------- veri yükleme ---------- */
@@ -314,12 +497,20 @@ function resetSessionState() {
 
 function loginView(msg) {
   const hasCache = !!readOfflineSnapshot();
+  const hasCred = hasOfflineCredential();
+  let lastUser = val("u");
+  if (!lastUser) {
+    try { lastUser = localStorage.getItem(OFFLINE_LAST_USER_KEY) || ""; } catch (_) {}
+  }
+  const offHint = (!navigator.onLine && hasCred)
+    ? `<p class="mu" style="text-align:center;margin:0 0 12px;color:var(--wa)">📡 İnternet kapalı — kayıtlı kullanıcı adı ve parolanızla çevrimdışı giriş yapabilirsiniz.</p>`
+    : "";
   $(`<div class="wrap login"><div class="logo">${AERO(104)}</div><div class="wm"><span>Avia</span><b>DoX</b></div>
-<p class="mu" style="text-align:center;margin:2px 0 24px">Balon operasyonları için evrak ve uçuş takibi</p>
-<input id="u" placeholder="Kullanıcı adı" autocapitalize="none" autocorrect="off" autocomplete="username" value="${esc(val("u"))}">
+<p class="mu" style="text-align:center;margin:2px 0 18px">Balon operasyonları için evrak ve uçuş takibi</p>${offHint}
+<input id="u" placeholder="Kullanıcı adı" autocapitalize="none" autocorrect="off" autocomplete="username" value="${esc(lastUser)}">
 <input id="p" type="password" placeholder="Parola" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
 <div class="err" id="e">${esc(msg || "")}</div>
-<button id="lb" onclick="doLogin()">Giriş Yap</button>
+<button id="lb" onclick="doLogin()">${!navigator.onLine && hasCred ? "Giriş Yap (Çevrimdışı)" : "Giriş Yap"}</button>
 <button class="sec" onclick="enterOfflineMode()">${hasCache ? "📡 Çevrimdışı Devam Et (Kayıtlı Oturum)" : "🛰️ İnternetsiz Devam Et (Çevrimdışı Flight Log)"}</button>
 <button class="sec" onclick="signupView()">Hesabın yok mu? Kayıt ol</button>
 <p style="text-align:center;margin-top:14px"><a href="#" onclick="privPage(loginView,'pol');return false">Gizlilik Politikası</a> · <a href="#" onclick="privPage(loginView,'ayd');return false">Aydınlatma Metni</a> · <a href="#" onclick="privPage(loginView,'riza');return false">Açık Rıza</a></p>${I18N.controls(true)}</div>`);
@@ -425,51 +616,101 @@ async function gateApply() {
 }
 async function gateOut() { if (sb) await sb.auth.signOut().catch(() => {}); resetSessionState(); loginView(); }
 
+async function tryOfflinePasswordLogin(u, p, errEl) {
+  const res = await verifyOfflineCredential(u, p);
+  if (res.status === "ok" && res.rec) {
+    const snap = readOfflineSnapshot(res.rec.uid) || readOfflineSnapshot();
+    if (snap && snap.user && snap.user.id === res.rec.uid) {
+      bootFromSnapshot(snap, true);
+      return true;
+    }
+    // Önbellek yoksa bile kimliği doğrulanmış kullanıcıya kendi DB'siyle Flight Log aç
+    bootFromSnapshot({
+      savedAt: res.rec.savedAt || Date.now(),
+      user: { id: res.rec.uid, email: res.rec.email || u },
+      profile: { id: res.rec.uid, full_name: res.rec.u || u, role: "staff" },
+      co: res.rec.co || "offline",
+      company: { id: res.rec.co || "offline", name: "AviaDoX (Çevrimdışı)" },
+      allStaff: [], people: [], docs: [], balloons: [], logs: [], mlogs: [], bdocs: [], camoCos: [],
+    }, true);
+    return true;
+  }
+  if (res.status === "bad_password") {
+    errEl.textContent = "Kullanıcı adı veya parola hatalı (çevrimdışı doğrulama).";
+    return false;
+  }
+  errEl.textContent = "Bu hesap cihazda kayıtlı değil. Çevrimdışı giriş için önce internet varken bir kez giriş yapın (veya aşağıdan İnternetsiz Devam Et'e basın).";
+  return false;
+}
+
 async function doLogin() {
   const u = val("u").trim(), p = val("p");
   const err = document.getElementById("e"), btn = document.getElementById("lb");
   if (!u || !p) { err.textContent = "Kullanıcı adı ve parolayı girin."; return; }
+  err.textContent = "";
   if (!sb || !navigator.onLine) {
-    err.textContent = "İnternet yok. Aşağıdaki Çevrimdışı Devam Et butonunu kullanabilirsiniz.";
+    btn.disabled = true; btn.textContent = "Doğrulanıyor…";
+    try {
+      await tryOfflinePasswordLogin(u, p, err);
+    } finally {
+      if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "Giriş Yap (Çevrimdışı)"; }
+    }
     return;
   }
   const email = u.includes("@") ? u : u.toLowerCase() + "@" + AERODOX.AUTH_DOMAIN;
-  btn.disabled = true; btn.textContent = "Giriş yapılıyor…"; err.textContent = "";
+  btn.disabled = true; btn.textContent = "Giriş yapılıyor…";
   try {
-    const { data, error } = await sb.auth.signInWithPassword({ email, password: p });
+    const { data, error } = await withTimeout(
+      sb.auth.signInWithPassword({ email, password: p }),
+      6500,
+      "İnternet bağlantısı zaman aşımına uğradı."
+    );
     if (error) {
-      err.textContent = /invalid|credentials/i.test(error.message || "") ? "Kullanıcı adı veya parola hatalı." : errMsg(error);
+      const m = errMsg(error);
+      if (/internet|ulaşılamıyor|zaman aşımı/i.test(m)) {
+        await tryOfflinePasswordLogin(u, p, err);
+        return;
+      }
+      err.textContent = /invalid|credentials/i.test(error.message || "") ? "Kullanıcı adı veya parola hatalı." : m;
       return;
     }
+    try { localStorage.removeItem(OFFLINE_SIGNED_OUT_KEY); } catch (_) {}
+    await saveOfflineCredential(u, email, p, data.user.id, null);
     await bootWith(data.user);
   } catch (e) {
-    err.textContent = errMsg(e);
+    const m = errMsg(e);
+    if (/internet|ulaşılamıyor|zaman aşımı/i.test(m)) {
+      await tryOfflinePasswordLogin(u, p, err);
+    } else {
+      err.textContent = m;
+    }
   } finally {
     if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "Giriş Yap"; }
   }
 }
 
-async function bootWith(user) {
+async function bootWith(user, preferredTab) {
   if (!sb || !navigator.onLine) {
     const snap = readOfflineSnapshot(user && user.id) || readOfflineSnapshot();
-    if (snap) { bootFromSnapshot(snap); return; }
+    if (snap) { bootFromSnapshot(snap, false); return; }
     enterOfflineMode();
     return;
   }
   $('<p class="ld">Veriler yükleniyor…</p>');
   try {
-    await boot(user);
+    await withTimeout(boot(user, preferredTab), 8000, "Sunucuya erişilemiyor (zaman aşımı).");
   } catch (e) {
     console.error(e);
-    if (/internet|ulaşılamıyor/i.test(errMsg(e))) {
+    const m = errMsg(e);
+    if (/internet|ulaşılamıyor|zaman aşımı|timeout/i.test(m)) {
       const snap = readOfflineSnapshot(user && user.id) || readOfflineSnapshot();
-      if (snap) { bootFromSnapshot(snap); return; }
-      offlineView(errMsg(e), user);
+      if (snap) { bootFromSnapshot(snap, false); return; }
+      offlineView(m, user);
       return;
     }
     if (sb) await sb.auth.signOut().catch(() => {});
     resetSessionState();
-    loginView(errMsg(e));
+    loginView(m);
   }
 }
 
@@ -504,7 +745,7 @@ async function doConsent() {
   }
 }
 
-async function boot(user) {
+async function boot(user, preferredTab) {
   S.user = user;
   S.offline = false;
   S.offlineGuest = false;
@@ -517,6 +758,7 @@ async function boot(user) {
     return;
   }
   S.profile = pr; S.co = pr.company_id;
+  updateOfflineCredentialCompany(user.id, S.co);
   const { data: co, error: e2 } = await sb.from("companies").select("*").eq("id", S.co).single();
   if (e2) throw e2;
   S.company = co;
@@ -526,19 +768,33 @@ async function boot(user) {
   await loadAvatar().catch(() => {});
   if (canManageUsers()) await loadAvatars().catch(() => {});
   S.trLoaded = false; S.trs = []; S.trf = []; S.trm = null;
-  S.tab = isCamo() ? "cm" : "dash"; S.cmCo = null; S.cmBal = null; S.menu = 0; S.person = 0; S.pv = 0; S.month = fd(new Date()).slice(0, 7);
+  const defaultTab = isCamo() ? "cm" : "dash";
+  S.tab = (preferredTab && TITLES[preferredTab] && !(isCamo() && !["cm", "ak"].includes(preferredTab))) ? preferredTab : defaultTab;
+  S.cmCo = null; S.cmBal = null; S.menu = 0; S.person = 0; S.pv = 0; S.month = fd(new Date()).slice(0, 7);
   render();
   hideSplash();
+  // Çevrimdışı iken kaydedilmiş tüm bekleyen GPX kayıtlarını arka planda otomatik sunucuya yükle
+  syncOfflineFlightsNow(false).catch(() => {});
 }
 
 async function logout() {
   if (typeof FL !== "undefined" && FL.running() && !FL.armLogout()) { S.tab = "fl"; S.menu = 0; render(); return; }
   if (typeof FL !== "undefined") await FL.teardown();
   if (typeof AVNOTIF !== "undefined" && AVNOTIF.clearReminders) await AVNOTIF.clearReminders().catch(() => {});
-  if (sb && !S.offlineGuest) await sb.auth.signOut().catch(() => {});
-  if (!S.offline) clearOfflineSnapshot();
+  if (sb && !S.offlineGuest && navigator.onLine) {
+    await withTimeout(sb.auth.signOut(), 3000, "").catch(() => {});
+  }
+  try { localStorage.setItem(OFFLINE_SIGNED_OUT_KEY, "1"); } catch (_) {}
   resetSessionState();
   loginView();
+}
+
+function clearDeviceOfflineData() {
+  if (!confirm("Bu cihazda kayıtlı çevrimdışı kullanıcı adı/parola doğrulaması ve önbellek temizlensin mi? (Bekleyen GPX kayıtlarınız silinmez.)")) return;
+  clearOfflineCredential(S.user && S.user.id);
+  clearOfflineSnapshot(S.user && S.user.id);
+  render();
+  toast("Cihazdaki çevrimdışı giriş bilgisi temizlendi.");
 }
 
 async function initApp() {
@@ -554,9 +810,29 @@ async function initApp() {
       },
     }).catch(() => {});
   }
-  window.addEventListener("online", () => {
-    if (S.offline && !S.offlineGuest) toast("İnternet bağlantısı geldi — üst çubuktan yenileyebilirsiniz.");
+  window.addEventListener("offline", () => {
+    if (sb) { try { sb.auth.stopAutoRefresh(); } catch (_) {} }
   });
+  window.addEventListener("online", () => {
+    if (sb) { try { sb.auth.startAutoRefresh(); } catch (_) {} }
+    if (S.offline) {
+      autoReconnectAndSync(false);
+    } else if (S.user && !S.offlineGuest) {
+      syncOfflineFlightsNow(false).catch(() => {});
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && navigator.onLine) {
+      if (S.offline) {
+        autoReconnectAndSync(false);
+      } else if (S.user && !S.offlineGuest) {
+        syncOfflineFlightsNow(false).catch(() => {});
+      }
+    }
+  });
+
+  const signedOut = (() => { try { return localStorage.getItem(OFFLINE_SIGNED_OUT_KEY) === "1"; } catch (_) { return false; } })();
+
   if (sb) {
     sb.auth.onAuthStateChange(ev => {
       if (ev === "SIGNED_OUT" && S.user && !S.offline) {
@@ -565,18 +841,32 @@ async function initApp() {
         loginView();
       }
     });
-    try {
-      const { data } = await sb.auth.getSession();
-      if (data && data.session && data.session.user) {
-        await bootWith(data.session.user);
-        return;
-      }
-    } catch (_) {}
   }
-  // Oturum çevrimiçi alınamadıysa kayıtlı çevrimdışı oturum varsa doğrudan aç
-  if (!navigator.onLine) {
-    const snap = readOfflineSnapshot();
-    if (snap) { bootFromSnapshot(snap); return; }
+
+  // 1) Cihaz açıkça çevrimdışıysa hiç ağ beklemeden (< 100 ms) önbellekten veya giriş ekranından aç!
+  if (!sb || !navigator.onLine) {
+    if (sb) { try { sb.auth.stopAutoRefresh(); } catch (_) {} }
+    if (!signedOut) {
+      const snap = readOfflineSnapshot();
+      if (snap) { bootFromSnapshot(snap, false); return; }
+    }
+    loginView();
+    return;
+  }
+
+  // 2) Çevrimiçi görünüyorsa bile iOS WKWebView'da asılı kalmaması için 3.5 sn zaman aşımıyla oturum al
+  try {
+    const { data } = await withTimeout(sb.auth.getSession(), 3500, "Oturum okuma zaman aşımı.");
+    if (data && data.session && data.session.user) {
+      await bootWith(data.session.user);
+      return;
+    }
+  } catch (_) {
+    // Ağ erişilemiyorsa (iOS zayıf sinyal / uçak modu geçişi) kayıtlı önbellekten hemen aç
+    if (!signedOut) {
+      const snap = readOfflineSnapshot();
+      if (snap) { bootFromSnapshot(snap, false); return; }
+    }
   }
   loginView();
 }
@@ -1168,6 +1458,7 @@ function setView() {
 ${um ? joinCard() + usersCard() : ""}
 ${adm ? `<div class="card"><b>🖼️ Şirket logosu</b><div class="mu" style="margin:4px 0 8px">Panelde görünür. PNG veya JPG, en fazla 2 MB.</div><input id="lg" type="file" accept="image/*"><button onclick="run(setLogo)">Logoyu yükle</button></div>` : ""}
 ${um ? `<div class="card"><b>👤 Yeni kullanıcı ekleme</b><div class="mu" style="margin-top:6px">Çalışanlar giriş ekranında Kayıt ol'a basıp listeden şirketi seçerek başvurur. Yukarıdaki Katılım istekleri bölümünden onaylarsın.</div></div>` : ""}
+<div class="card"><b>📡 Çevrimdışı Giriş ve GPX Senkronu</b><div class="mu" style="margin:6px 0">${hasOfflineCredential(S.user.id) ? "Bu cihazda çevrimdışı kullanıcı adı/parola doğrulaması aktif (parola düz metin olarak saklanmaz, güvenli özet kullanılır). İnternet gelince bekleyen GPX uçuş kayıtları otomatik sunucuya yüklenir." : "Çevrimdışı giriş için bu cihazda internet varken bir kez kullanıcı adı ve parolanızla giriş yapmanız yeterlidir."}</div><button class="sec" onclick="run(()=>syncOfflineFlightsNow(true))">🔄 Bekleyen GPX Kayıtlarını Senkronize Et</button>${hasOfflineCredential(S.user.id) ? '<button class="x" onclick="clearDeviceOfflineData()">🧹 Bu Cihazdan Çevrimdışı Girişi Sil</button>' : ""}</div>
 <div class="card"><b>🔒 Gizlilik</b><div class="mu" style="margin:6px 0">Hangi verileri neden işlediğimizi ve haklarını okuyabilirsin.</div><button class="sec" onclick="privPage(render,'pol')">Gizlilik Politikası</button><button class="sec" onclick="privPage(render,'ayd')">KVKK Aydınlatma Metni</button><button class="sec" onclick="privPage(render,'riza')">Açık Rıza Beyanı</button></div>
 <div class="card"><b>🗑 Hesabımı sil</b><div class="mu" style="margin:6px 0">Giriş hesabın, profilin, fotoğrafın ve uçuş kayıtların kalıcı olarak silinir. Geri alınamaz. Personel kaydın ve evraklar işletmeye aittir, yöneticin siler. Şirketin tek yöneticisiysen önce başka birini yönetici yap.</div><input id="dx" placeholder="Onay için SİL yaz" autocapitalize="characters"><button class="x" onclick="run(deleteAccount)">Hesabımı kalıcı olarak sil</button></div>
 <div class="card"><b>ℹ️ Hesap</b><div class="mu" style="margin-top:6px">${esc(S.user.email)}<br>${esc(S.company.name)} · ${esc(ROLE_NAMES[myRole()] || "Kullanıcı")}</div></div></div>`;
@@ -1432,7 +1723,10 @@ async function changePw() {
   if (a.length < 8) return alert("Parola en az 8 karakter olmalı.");
   if (a !== b) return alert("Parolalar aynı değil.");
   const { error } = await sb.auth.updateUser({ password: a }); if (error) throw error;
-  render(); toast("Parola değiştirildi");
+  if (S.user && S.user.id) {
+    await saveOfflineCredential(S.user.email, S.user.email, a, S.user.id, S.co);
+  }
+  render(); toast("Parola değiştirildi (çevrimdışı giriş de güncellendi)");
 }
 async function squareJpeg(file, size = 400) {
   const url = URL.createObjectURL(file);
@@ -1467,7 +1761,8 @@ async function deleteAccount() {
   }
   try { if (typeof FL !== "undefined") await FL.teardown(); indexedDB.deleteDatabase("aerodox-fl-" + co + "-" + uid); } catch (_) {}
   if (typeof AVNOTIF !== "undefined" && AVNOTIF.clearReminders) await AVNOTIF.clearReminders().catch(() => {});
-  clearOfflineSnapshot();
+  clearOfflineCredential(uid);
+  clearOfflineSnapshot(uid);
   await sb.auth.signOut().catch(() => {});
   resetSessionState();
   loginView("Hesabın silindi.");

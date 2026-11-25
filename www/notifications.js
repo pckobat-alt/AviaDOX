@@ -201,7 +201,10 @@ const AVNOTIF = (() => {
 
         const perm = await pn.checkPermissions();
         state.pushPerm = (perm && perm.receive) || "prompt";
-        if (state.pushPerm === "granted") {
+        const plat = window.Capacitor && window.Capacitor.getPlatform ? window.Capacitor.getPlatform() : "";
+        // Android'de google-services.json yoksa otomatik pn.register() Firebase hatasıyla uygulamayı kapatabilir;
+        // iOS'ta APNs doğrudan hazırdır, Android'de yalnızca kullanıcı Slot bildirimini açtığında denenir.
+        if (state.pushPerm === "granted" && plat === "ios") {
           await pn.register().catch(() => {});
         }
       } catch (_) {}

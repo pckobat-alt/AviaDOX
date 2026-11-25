@@ -24,15 +24,18 @@
 
 <div id="app"><p class="ld">Yükleniyor…</p></div>
 
-<!-- Önce yerel paketli Supabase SDK (internetsiz APK/IPA açılışı için), yoksa web yedeği -->
+<!-- Önce yerel paketli Supabase SDK (internetsiz APK/IPA açılışı için); native veya çevrimdışı ortamda dış CDN çağrısı yapılmaz -->
 <script src="vendor/supabase.umd.js"></script>
 <script>
-if (typeof window.supabase === "undefined") {
-  var _sbFallback = document.createElement("script");
-  _sbFallback.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js";
-  _sbFallback.async = false;
-  document.head.appendChild(_sbFallback);
-}
+(function () {
+  var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  if (typeof window.supabase === "undefined" && !isNative && navigator.onLine) {
+    var s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js";
+    s.async = true;
+    document.head.appendChild(s);
+  }
+})();
 </script>
 <script src="config.js"></script>
 <script src="notifications.js"></script>
@@ -42,13 +45,37 @@ if (typeof window.supabase === "undefined") {
 <script src="weather.js"></script>
 <script src="slot.js"></script>
 <script>
-window.addEventListener("load", function () {
-  if (typeof initApp === "function") initApp();
-  var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
-  if (!isNative && "serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(function () {});
+(function () {
+  var booted = false;
+  function startApp() {
+    if (booted) return;
+    booted = true;
+    try {
+      if (typeof initApp === "function") initApp();
+    } catch (e) {
+      console.error("initApp error:", e);
+      var sp = document.getElementById("splash");
+      if (sp) sp.remove();
+    }
+    var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    if (!isNative && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(function () {});
+    }
   }
-});
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startApp);
+  } else {
+    startApp();
+  }
+  // Güvenlik koruması: iOS/Android WebView çevrimdışı açılışta splash asla takılı kalmasın
+  setTimeout(function () {
+    var sp = document.getElementById("splash");
+    if (sp && sp.parentNode) {
+      sp.classList.add("hide");
+      setTimeout(function () { if (sp.parentNode) sp.remove(); }, 500);
+    }
+  }, 3000);
+})();
 </script>
 </body>
 </html>
