@@ -1,0 +1,33 @@
+<!-- ios/App/App/Info.plist içinde <dict> bloğunun sonuna ekleyin -->
+<!-- KRİTİK: iOS'ta arka planda GPX konum kaydı + diğer uygulama push bildirimleri için zorunlu anahtarlar -->
+<key>UIBackgroundModes</key>
+<array>
+  <string>location</string>
+  <string>remote-notification</string>
+</array>
+
+<!-- Opsiyonel: iOS 16.2+ Kilit Ekranı Live Activity ve Dynamic Island desteği -->
+<key>NSSupportsLiveActivities</key>
+<true/>
+
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>AviaDoX, Flight Log uçuş kaydını haritada göstermek ve GPX uçuş izini oluşturmak için konumunuzu kullanır.</string>
+
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+<string>AviaDoX, sıcak hava balonu uçuşu sırasında ekran kapalıyken veya uygulama arka plandayken GPX konum kaydına kesintisiz devam etmek için arka plan konum izni gerektirir.</string>
+
+<key>NSLocationAlwaysUsageDescription</key>
+<string>AviaDoX, uçuş kaydı açıkken (Start–Stop arasında) uygulama arka planda olsa bile GPX izini kaydetmeye devam eder.</string>
+
+<!-- Profil fotoğrafı ve evrak/PDF yükleme izinleri -->
+<key>NSPhotoLibraryUsageDescription</key>
+<string>Profil fotoğrafı, şirket logosu ve evrak yüklemek için fotoğraf arşivinize erişim gerekir.</string>
+
+<key>NSCameraUsageDescription</key>
+<string>Evrak veya profil fotoğrafı çekmek için kamera erişimi gerekir.</string>
+
+<!-- GPX dosyalarının iOS Dosyalar (Files) uygulamasından paylaşılabilmesi -->
+<key>UIFileSharingEnabled</key>
+<true/>
+<key>LSSupportsOpeningDocumentsInPlace</key>
+<true/>
