@@ -1,0 +1,40 @@
+{
+  "appId": "com.aviadox.app",
+  "appName": "AviaDoX",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "capacitor",
+    "allowNavigation": [
+      "*.supabase.co",
+      "api.open-meteo.com",
+      "aviationweather.gov"
+    ]
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "allowsLinkPreview": false,
+    "limitsNavigationsToAppBoundDomains": false
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0,
+      "launchAutoHide": true,
+      "backgroundColor": "#0b1929",
+      "showSpinner": false
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon_config_sample",
+      "iconColor": "#c95b1e",
+      "sound": "default"
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    }
+  }
+}
