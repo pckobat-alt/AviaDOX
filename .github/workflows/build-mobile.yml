@@ -19,7 +19,7 @@ jobs:
           node-version: '20'
 
       - name: Java 17 (Temurin) kur
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -61,7 +61,7 @@ jobs:
             const p = "android/app/src/main/AndroidManifest.xml";
             let xml = fs.readFileSync(p, "utf8");
             if (!xml.includes("xmlns:tools=")) {
-              xml = xml.replace("<manifest ", `<manifest xmlns:tools="http://schemas.android.com/tools" `);
+              xml = xml.replace(/<manifest\b/, `<manifest xmlns:tools="http://schemas.android.com/tools"`);
             }
             const perms = [
               "android.permission.INTERNET",
@@ -79,9 +79,14 @@ jobs:
                 xml = xml.replace("<application", `    <uses-permission android:name="${perm}" />\n    <application`);
               }
             }
-            if (!xml.includes("BackgroundGeolocationService")) {
-              const svc = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:node="merge" tools:replace="android:exported" />\n`;
-              xml = xml.replace("</application>", svc + "    </application>");
+            const svcLine = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:node="merge" tools:replace="android:exported" />`;
+            if (/BackgroundGeolocationService/.test(xml)) {
+              xml = xml.replace(
+                /<service[\s\S]*?com\.equimaps\.capacitor_background_geolocation\.BackgroundGeolocationService[\s\S]*?\/>/,
+                svcLine
+              );
+            } else {
+              xml = xml.replace("</application>", `${svcLine}\n    </application>`);
             }
             fs.writeFileSync(p, xml, "utf8");
             console.log("AndroidManifest.xml ve ic_stat_aviadox.xml hazirlandi.");
@@ -102,16 +107,16 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
   build-ios-ipa:
-    name: iOS IPA Derle (macOS + Xcode)
+    name: iOS-AvaDOX
     runs-on: macos-latest
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
 
-      - name: Node.js 20 kur
-        uses: actions/setup-node@v4
+      - name: Node.js 24 kur
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Bağımlılıkları kur ve çevrimdışı Supabase paketini hazırla
         run: |
