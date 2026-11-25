@@ -1,0 +1,26 @@
+<!--
+  AviaDoX — Android 13/14/15+ Arka Plan GPX ve Kilit Ekranı Bildirim İzinleri
+  Aşağıdaki <uses-permission> satırlarını android/app/src/main/AndroidManifest.xml
+  içinde <manifest> kök etiketinin altına, <service> bloğunu ise <application> içine ekleyin.
+  (GitHub Actions build-mobile.yml iş akışı bunları otomatik olarak uygular.)
+-->
+
+<!-- 1. <manifest> içine eklenecek izinler -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+
+<!-- 2. <application> içine eklenecek Android 14+ (API 34+) Konum Ön Plan Servisi -->
+<!--
+<service
+    android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
+    android:enabled="true"
+    android:exported="false"
+    android:foregroundServiceType="location" />
+-->
