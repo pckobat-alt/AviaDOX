@@ -1,50 +1,33 @@
-- name: AndroidManifest.xml arka plan GPX ve bildirim izinlerini uygula
-        run: |
-          node -e '
-            const fs = require("fs");
-            const p = "android/app/src/main/AndroidManifest.xml";
-            let xml = fs.readFileSync(p, "utf8");
+<!--
+  AviaDoX — Android 13/14/15+ Arka Plan GPX ve Kilit Ekranı Bildirim İzinleri
+  1) <manifest> kök etiketinde xmlns:tools="http://schemas.android.com/tools" bulunduğundan emin olun.
+  2) <uses-permission> satırlarını <manifest> altına, <service> bloğunu <application> içine ekleyin.
+  (GitHub Actions build-mobile.yml iş akışı bunları ve ic_stat_aviadox vektör ikonunu otomatik uygular.)
+-->
 
-            if (!xml.includes("xmlns:tools=")) {
-              xml = xml.replace(
-                /<manifest\b/,
-                "<manifest xmlns:tools=\"http://schemas.android.com/tools\""
-              );
-            }
+<!-- 0. <manifest> kök etiketine tools ad alanını ekleyin:
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+-->
 
-            const perms = [
-              "android.permission.INTERNET",
-              "android.permission.ACCESS_NETWORK_STATE",
-              "android.permission.ACCESS_COARSE_LOCATION",
-              "android.permission.ACCESS_FINE_LOCATION",
-              "android.permission.ACCESS_BACKGROUND_LOCATION",
-              "android.permission.FOREGROUND_SERVICE",
-              "android.permission.FOREGROUND_SERVICE_LOCATION",
-              "android.permission.POST_NOTIFICATIONS",
-              "android.permission.WAKE_LOCK"
-            ];
+<!-- 1. <manifest> içine eklenecek izinler -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
 
-            for (const perm of perms) {
-              if (!xml.includes(perm)) {
-                xml = xml.replace(
-                  /<application\b/,
-                  `    <uses-permission android:name="${perm}" />\n\n    <application`
-                );
-              }
-            }
-
-            const svcBlock = `        <service\n            android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"\n            android:enabled="true"\n            android:exported="false"\n            android:foregroundServiceType="location"\n            tools:replace="android:exported" />`;
-
-            if (/BackgroundGeolocationService/.test(xml)) {
-              xml = xml.replace(
-                /<service[\s\S]*?com\.equimaps\.capacitor_background_geolocation\.BackgroundGeolocationService[\s\S]*?\/>/,
-                svcBlock
-              );
-            } else {
-              xml = xml.replace(/<\/application>/, `${svcBlock}\n    </application>`);
-            }
-
-            fs.writeFileSync(p, xml, "utf8");
-            console.log("--- GUNCEL MANIFEST (ILK 60 SATIR) ---");
-            console.log(xml.split("\n").slice(0, 60).join("\n"));
-          '
+<!-- 2. <application> içine eklenecek Android 14+ (API 34+) Konum Ön Plan Servisi (Manifest Merger çakışmasız) -->
+<!--
+<service
+    android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
+    android:enabled="true"
+    android:exported="false"
+    android:foregroundServiceType="location"
+    tools:node="merge"
+    tools:replace="android:exported" />
+-->
