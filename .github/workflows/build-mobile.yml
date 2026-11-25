@@ -42,6 +42,14 @@ jobs:
             const fs = require("fs");
             const p = "android/app/src/main/AndroidManifest.xml";
             let xml = fs.readFileSync(p, "utf8");
+
+            if (!xml.includes("xmlns:tools=")) {
+              xml = xml.replace(
+                "<manifest",
+                "<manifest xmlns:tools=\"http://schemas.android.com/tools\""
+              );
+            }
+
             const perms = [
               "android.permission.INTERNET",
               "android.permission.ACCESS_NETWORK_STATE",
@@ -53,15 +61,27 @@ jobs:
               "android.permission.POST_NOTIFICATIONS",
               "android.permission.WAKE_LOCK"
             ];
+
             for (const perm of perms) {
               if (!xml.includes(perm)) {
-                xml = xml.replace("<application", `    <uses-permission android:name="${perm}" />\n    <application`);
+                xml = xml.replace(
+                  "<application",
+                  `    <uses-permission android:name="${perm}" />\n    <application`
+                );
               }
             }
-            if (!xml.includes("foregroundServiceType=\"location\"")) {
-              const svc = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" />\n`;
-              xml = xml.replace("</application>", svc + "    </application>");
+
+            const svcLine = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:replace="android:exported" />`;
+
+            if (xml.includes("BackgroundGeolocationService")) {
+              xml = xml.replace(
+                /<service[^>]*com\.equimaps\.capacitor_background_geolocation\.BackgroundGeolocationService[^>]*\/>/,
+                svcLine
+              );
+            } else {
+              xml = xml.replace("</application>", `${svcLine}\n    </application>`);
             }
+
             fs.writeFileSync(p, xml, "utf8");
             console.log("AndroidManifest.xml guncellendi.");
           '
