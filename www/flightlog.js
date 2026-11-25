@@ -1,0 +1,694 @@
+/* ===== AviaDoX Flight Log: uydu haritası, telemetri, GPX 1.1, KML NOTAM, 90 gün saklama, çevrimdışı + iOS/Android arka plan GPX ===== */
+const FL=(()=>{
+"use strict";
+const RET_DAYS=90,DAY=864e5,WARN_M=500,FIX_MAX_AGE=10000,EMA=0.3,PT_MS=10000,NOTIF_MS=30000;
+const TILE="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+const isOnlineMode=()=>typeof S!=="undefined"&&!S.offline&&!S.offlineGuest&&typeof sb!=="undefined"&&!!sb&&navigator.onLine;
+
+//#PURE-START
+const R=6371008.8,rad=d=>d*Math.PI/180,deg=r=>r*180/Math.PI;
+function haversine(a,b){const dLa=rad(b[0]-a[0]),dLo=rad(b[1]-a[1]);const h=Math.sin(dLa/2)**2+Math.cos(rad(a[0]))*Math.cos(rad(b[0]))*Math.sin(dLo/2)**2;return 2*R*Math.asin(Math.min(1,Math.sqrt(Math.max(0,h))))}
+function bearing(a,b){const dLo=rad(b[1]-a[1]);const y=Math.sin(dLo)*Math.cos(rad(b[0]));const x=Math.cos(rad(a[0]))*Math.sin(rad(b[0]))-Math.sin(rad(a[0]))*Math.cos(rad(b[0]))*Math.cos(dLo);return(deg(Math.atan2(y,x))+360)%360}
+function distSeg(px,py,ax,ay,bx,by){const dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;const t=l2?Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/l2)):0;return Math.hypot(px-(ax+t*dx),py-(ay+t*dy))}
+/* Tüm noktalar [enlem, boylam] sırasındadır. */
+function pointInRing(p,ring){const py=p[0],px=p[1];let ins=false;for(let i=0,j=ring.length-1;i<ring.length;j=i++){const yi=ring[i][0],xi=ring[i][1],yj=ring[j][0],xj=ring[j][1];if((yi>py)!==(yj>py)&&px<(xj-xi)*(py-yi)/(yj-yi)+xi)ins=!ins}return ins}
+function pointInPolygon(p,pg){return pointInRing(p,pg.outer)&&!pg.holes.some(h=>pointInRing(p,h))}
+function distToRingEdge(p,ring){const cl=Math.cos(rad(p[0]));const xy=q=>[rad(q[1]-p[1])*R*cl,rad(q[0]-p[0])*R];let m=Infinity;for(let i=0;i<ring.length;i++){const a=xy(ring[i]),b=xy(ring[(i+1)%ring.length]);m=Math.min(m,distSeg(0,0,a[0],a[1],b[0],b[1]))}return m}
+/* KRİTİK: KML "boylam,enlem,rakım" -> harita "enlem,boylam". */
+function parseCoords(s){return String(s).trim().split(/\s+/).map(t=>t.split(",").map(Number)).filter(a=>a.length>=2&&isFinite(a[0])&&isFinite(a[1])&&Math.abs(a[1])<=90&&Math.abs(a[0])<=180).map(a=>[a[1],a[0]])}
+/* GPS okumasını telemetri noktasına çevirir. CoreLocation -1 değerleri elenir. */
+function makePoint(pos,prev,baro){const c=pos.coords,ts=pos.timestamp,here=[c.latitude,c.longitude];const dt=prev?(ts-prev.ts)/1000:0;const d=prev&&dt>0?haversine([prev.lat,prev.lon],here):0;
+ const validSpd=c.speed!=null&&isFinite(c.speed)&&c.speed>=0;
+ const gs=validSpd?c.speed:(dt>0?d/dt:0);
+ const validHdg=c.heading!=null&&isFinite(c.heading)&&c.heading>=0;
+ let course=validHdg?(c.heading%360+360)%360:(prev&&prev.course!=null?prev.course:null);
+ if(!validHdg&&prev&&d>0.5)course=bearing([prev.lat,prev.lon],here);
+ const gpsAlt=c.altitude!=null&&isFinite(c.altitude)?c.altitude:null,baroAlt=baro==null?null:baro,ele=baroAlt!=null?baroAlt:gpsAlt;
+ let vs=0;if(prev&&dt>0&&ele!=null&&prev.ele!=null)vs=prev.vs*(1-EMA)+((ele-prev.ele)/dt)*EMA;
+ return{ts,t:new Date(ts).toISOString(),lat:c.latitude,lon:c.longitude,gpsAlt,baroAlt,ele,acc:c.accuracy,gs,course,vs,windSpeed:gs,windFrom:course==null?null:(course+180)%360}}
+function flightFileName(d){d=d||new Date();const p=n=>String(n).padStart(2,"0");return`Flight_${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}.gpx`}
+function flightStats(pts){let dist=0,maxAlt=-Infinity,maxClimb=0,maxSink=0;pts.forEach((p,i)=>{if(i&&!p.gapBefore)dist+=haversine([pts[i-1].lat,pts[i-1].lon],[p.lat,p.lon]);if(p.ele!=null&&isFinite(p.ele))maxAlt=Math.max(maxAlt,p.ele);if(isFinite(p.vs)){maxClimb=Math.max(maxClimb,p.vs);maxSink=Math.min(maxSink,p.vs)}});
+ return{distanceM:dist,maxAlt:isFinite(maxAlt)?maxAlt:null,maxClimb,maxSink,durationSec:pts.length>1?(pts[pts.length-1].ts-pts[0].ts)/1000:0}}
+const xe=s=>String(s).replace(/[<>&"']/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;","'":"&apos;"}[c]));
+const nf=(n,d)=>{const v=Number(n);return isFinite(v)?v.toFixed(d):"0"};
+/* GPX 1.1. Tek geçişli döngü (iOS JSC stack overflow korumalı). */
+function buildGpx(pts,o){if(!pts.length)throw new Error("Boş uçuş");let mnLa=90,mxLa=-90,mnLo=180,mxLo=-180;for(const p of pts){if(p.lat<mnLa)mnLa=p.lat;if(p.lat>mxLa)mxLa=p.lat;if(p.lon<mnLo)mnLo=p.lon;if(p.lon>mxLo)mxLo=p.lon}
+ const tp=pts.map((p,idx)=>`${idx>0&&p.gapBefore?"    </trkseg>\n    <trkseg>\n":""}      <trkpt lat="${nf(p.lat,7)}" lon="${nf(p.lon,7)}">
+${p.ele!=null&&isFinite(p.ele)?`        <ele>${nf(p.ele,1)}</ele>\n`:""}        <time>${p.t}</time>
+        <extensions>
+          <gpxtpx:TrackPointExtension>
+            <gpxtpx:speed>${nf(p.gs,2)}</gpxtpx:speed>
+${p.course!=null&&isFinite(p.course)?`            <gpxtpx:course>${nf(p.course,1)}</gpxtpx:course>\n`:""}          </gpxtpx:TrackPointExtension>
+          <bo:vspeed>${nf(p.vs,2)}</bo:vspeed>
+${p.baroAlt!=null&&isFinite(p.baroAlt)?`          <bo:baroAlt>${nf(p.baroAlt,1)}</bo:baroAlt>\n`:""}${p.gpsAlt!=null&&isFinite(p.gpsAlt)?`          <bo:gpsAlt>${nf(p.gpsAlt,1)}</bo:gpsAlt>\n`:""}          <bo:windSpeed>${nf(p.windSpeed,2)}</bo:windSpeed>
+${p.windFrom!=null&&isFinite(p.windFrom)?`          <bo:windFrom>${nf(p.windFrom,1)}</bo:windFrom>\n`:""}        </extensions>
+      </trkpt>`).join("\n");
+ return`<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="AviaDoX FlightLog"
+  xmlns="http://www.topografix.com/GPX/1/1"
+  xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
+  xmlns:bo="https://aviadox.app/xmlschemas/v1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.garmin.com/xmlschemas/TrackPointExtension/v1 http://www.garmin.com/xmlschemas/TrackPointExtensionv1.xsd">
+  <metadata>
+    <name>${xe(o.name)}</name>
+    <time>${new Date(o.startedAt).toISOString()}</time>
+    <bounds minlat="${nf(mnLa,7)}" minlon="${nf(mnLo,7)}" maxlat="${nf(mxLa,7)}" maxlon="${nf(mxLo,7)}"/>
+  </metadata>
+  <trk>
+    <name>${xe(o.name)}</name>
+    <trkseg>
+${tp}
+    </trkseg>
+  </trk>
+</gpx>
+`}
+const fmtDur=ms=>{const s=Math.max(0,Math.floor(ms/1000)),p=n=>String(n).padStart(2,"0");return`${p(Math.floor(s/3600))}:${p(Math.floor(s%3600/60))}:${p(s%60)}`};
+const isExpired=(f,now)=>f.createdAt<now-RET_DAYS*DAY;
+//#PURE-END
+
+/* ---------- durum ---------- */
+function fresh(){return{co:null,root:null,map:null,sub:"map",status:"idle",fix:null,raw:null,cur:null,live:null,prevP:null,pts:[],t0:0,t1:0,now:0,follow:false,centered:false,err:"",
+ kml:{polygons:[],lines:[],points:[]},kmlName:"",flights:[],last:null,fence:{level:"clear"},fenceKey:"clear",watch:null,timer:null,purgeT:null,wake:null,
+ note:"",noteT:null,persistent:true,visH:null,pageH:null,onlineH:null,alHtml:"",confirmId:null,confirmT:null,logoutArm:false,lastPurge:0,syncing:new Set(),syncErr:"",
+ pendingGap:false,gapMsg:"",hidAt:0,gapSec:0,draft:null,draftT:0,pubT:0,notifT:0,trimId:null,trimH:"",trimT:"",trimPts:null,trimSure:false,locAsked:false,peers:{},peerCh:null,peerT:null,share:true}}
+const Q=fresh();
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const canDel=f=>(typeof isAdmin==="function"&&isAdmin())||!f.synced;
+
+/* ---------- depolama: IndexedDB (şirket + kullanıcı başına ayrı), olmazsa bellek ---------- */
+let dbp=null;const mem={flights:new Map(),meta:new Map()};
+function openDB(){
+ if(!dbp){
+  dbp=new Promise((res,rej)=>{
+   try{
+    const r=indexedDB.open("aerodox-fl-"+Q.co+"-"+(S.user?S.user.id:"anon"),1);
+    r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains("flights"))d.createObjectStore("flights",{keyPath:"id"});if(!d.objectStoreNames.contains("meta"))d.createObjectStore("meta",{keyPath:"key"})};
+    r.onsuccess=()=>{const d=r.result;d.onversionchange=()=>{try{d.close()}catch(_){}dbp=null};res(d)};
+    r.onerror=()=>{dbp=null;rej(r.error||new Error("idb"))};
+    r.onblocked=()=>{dbp=null;rej(new Error("blocked"))}
+   }catch(e){dbp=null;rej(e)}
+  });
+ }
+ return dbp;
+}
+async function tx(s,mode,fn){const db=await openDB();return new Promise((res,rej)=>{const t=db.transaction(s,mode);const rq=fn(t.objectStore(s));t.oncomplete=()=>res(rq?rq.result:undefined);t.onerror=t.onabort=()=>rej(t.error||new Error("tx"))})}
+const keyOf=(s,v)=>s==="flights"?v.id:v.key;
+async function dbPut(s,v){try{await tx(s,"readwrite",o=>o.put(v))}catch(e){Q.persistent=false;mem[s].set(keyOf(s,v),v)}}
+async function dbDel(s,k){try{await tx(s,"readwrite",o=>o.delete(k))}catch(e){Q.persistent=false;mem[s].delete(k)}}
+async function dbAll(s){try{return await tx(s,"readonly",o=>o.getAll())}catch(e){Q.persistent=false;return Array.from(mem[s].values())}}
+async function dbGet(s,k){try{return await tx(s,"readonly",o=>o.get(k))}catch(e){Q.persistent=false;return mem[s].get(k)}}
+
+/* ---------- sunucu (Supabase) senkronu (çevrimdışı uyumlu) ---------- */
+const pilotName=()=>(S.profile&&S.profile.full_name)||(S.user&&S.user.email)||"";
+async function gzip(text){if(typeof CompressionStream==="undefined")return null;try{return await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))).blob()}catch(e){return null}}
+async function gunzip(blob){return await new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).text()}
+async function syncFlight(rec){
+ if(!isOnlineMode()||Q.syncing.has(rec.id))return false;
+ Q.syncing.add(rec.id);
+ try{
+  const gzb=await gzip(rec.gpx),path=`${S.co}/flights/${rec.id}${gzb?".gpx.gz":".gpx"}`,blob=gzb||new Blob([rec.gpx],{type:"application/gpx+xml"});
+  const up=await sb.storage.from("documents").upload(path,blob,{contentType:gzb?"application/gzip":"application/octet-stream"});
+  if(up.error&&!/already exists|duplicate/i.test(up.error.message||""))throw up.error;
+  const ins=await sb.from("flights").insert({id:rec.id,company_id:S.co,pilot_user:S.user.id,pilot_name:rec.pilotName||pilotName(),name:rec.name,started_at:new Date(rec.startedAt).toISOString(),ended_at:new Date(rec.endedAt).toISOString(),duration_sec:rec.durationSec,max_alt:rec.maxAlt,distance_m:rec.distanceM,point_count:rec.pointCount,sim:false,file_path:path});
+  if(ins.error&&ins.error.code!=="23505")throw ins.error;
+  rec.synced=true;rec.filePath=path;Q.syncErr="";await dbPut("flights",rec);return true;
+ }catch(e){Q.syncErr=errMsg(e);return false}finally{Q.syncing.delete(rec.id)}
+}
+async function fetchRemote(){
+ const cut=new Date(Date.now()-RET_DAYS*DAY).toISOString();
+ const{data,error}=await sb.from("flights").select("*").gte("started_at",cut).order("started_at",{ascending:false}).limit(500);
+ if(error)throw error;
+ return(data||[]).map(x=>({id:x.id,name:x.name,createdAt:Date.parse(x.started_at),startedAt:Date.parse(x.started_at),endedAt:Date.parse(x.ended_at),durationSec:Number(x.duration_sec)||0,maxAlt:x.max_alt==null?null:Number(x.max_alt),distanceM:Number(x.distance_m)||0,pointCount:x.point_count,pilotName:x.pilot_name,filePath:x.file_path,synced:true}))
+}
+async function purgeRemote(){
+ if(!isOnlineMode()||Date.now()-Q.lastPurge<36e5)return;
+ Q.lastPurge=Date.now();
+ const cut=new Date(Date.now()-RET_DAYS*DAY).toISOString();
+ const{data,error}=await sb.from("flights").select("id,file_path").lt("started_at",cut).limit(200);
+ if(error)throw error;if(!data||!data.length)return;
+ const r1=await sb.storage.from("documents").remove(data.map(x=>x.file_path));if(r1.error)throw r1.error;
+ const r2=await sb.from("flights").delete().in("id",data.map(x=>x.id));if(r2.error)throw r2.error;
+}
+async function purge(){const now=Date.now();const old=(await dbAll("flights")).filter(f=>isExpired(f,now));await Promise.all(old.map(f=>dbDel("flights",f.id)));return old.length}
+async function refreshFlights(){
+ await purge();const loc=await dbAll("flights");let remote=[],ok=false;
+ if(isOnlineMode()){
+  try{await purgeRemote()}catch(e){}
+  try{remote=await fetchRemote();ok=true;Q.syncErr=""}catch(e){Q.syncErr=errMsg(e)}
+ }
+ const by=new Map();remote.forEach(r=>by.set(r.id,r));
+ loc.forEach(l=>{const r=by.get(l.id);if(ok&&!l.synced&&!r)syncFlight(l).then(()=>{ui();renderLog()});by.set(l.id,{...(r||{}),...l,synced:!!(l.synced||r)})});
+ Q.flights=Array.from(by.values()).sort((a,b)=>b.createdAt-a.createdAt);ui();renderLog();
+}
+async function withGpx(rec){
+ if(rec.gpx)return rec;
+ if(!isOnlineMode())throw new Error("Bu uçuşun GPX dosyası cihazda değil; indirmek için internet gerekli.");
+ const{data,error}=await sb.storage.from("documents").download(rec.filePath);if(error)throw error;
+ rec.gpx=rec.filePath.endsWith(".gz")?await gunzip(data):await data.text();return rec;
+}
+async function delFlight(rec){
+ if(rec.synced||rec.filePath){
+  if(!isOnlineMode())throw new Error("Sunucudaki kaydı silmek için internet bağlantısı gerekli.");
+  const{data,error}=await sb.from("flights").delete().eq("id",rec.id).select("id");if(error)throw error;
+  if(!data||!data.length)throw new Error("Bu kaydı silme yetkiniz yok.");
+  if(rec.filePath)await sb.storage.from("documents").remove([rec.filePath]);
+ }
+ await dbDel("flights",rec.id);
+}
+
+/* ---------- KML (çevrimdışı önbellek destekli) ---------- */
+function parseKml(text){const doc=new DOMParser().parseFromString(text,"application/xml");if(doc.querySelector("parsererror"))throw new Error("Geçersiz KML dosyası (KMZ ise önce KML olarak dışa aktarın)");
+ const ns=(el,t)=>Array.from(el.getElementsByTagNameNS("*",t));const tx1=(el,t)=>{const n=ns(el,t)[0];return n&&n.textContent?n.textContent.trim():""};
+ const plain=h=>new DOMParser().parseFromString(String(h).replace(/<br\s*\/?>/gi,"\n"),"text/html").body.textContent.trim();
+ const co=el=>{const c=ns(el,"coordinates")[0];return c?parseCoords(c.textContent):[]};
+ const out={polygons:[],lines:[],points:[]};let n=0;
+ for(const pm of ns(doc,"Placemark")){const meta={name:tx1(pm,"name")||"(adsız)",description:plain(tx1(pm,"description"))};
+  for(const pg of ns(pm,"Polygon")){const ob=ns(pg,"outerBoundaryIs")[0];const outer=ob?co(ob):[];if(outer.length>=3)out.polygons.push({id:"pg"+n++,...meta,outer,holes:ns(pg,"innerBoundaryIs").map(co).filter(h=>h.length>=3)})}
+  for(const ls of ns(pm,"LineString")){const path=co(ls);if(path.length>=2)out.lines.push({id:"ln"+n++,...meta,path})}
+  for(const pt of ns(pm,"Point")){const pos=co(pt)[0];if(pos)out.points.push({id:"pt"+n++,...meta,pos})}}
+ return out}
+function kmlBounds(k){let a=90,b=-90,c=180,d=-180;const add=q=>{a=Math.min(a,q[0]);b=Math.max(b,q[0]);c=Math.min(c,q[1]);d=Math.max(d,q[1])};
+ k.polygons.forEach(p=>p.outer.forEach(add));k.lines.forEach(l=>l.path.forEach(add));k.points.forEach(p=>add(p.pos));return{minLat:a,maxLat:b,minLon:c,maxLon:d}}
+function setKml(k,name){Q.kml=k;Q.kmlName=name;checkFence();if(Q.map)Q.map.redraw();ui()}
+async function loadKmlRemote(){
+ const p=S.company&&S.company.kml_path;
+ const c=await dbGet("meta","kml");
+ if(!p){
+  if(c&&c.text){setKml(parseKml(c.text),"NOTAM KML (yerel)");return}
+  if(Q.kmlName)setKml({polygons:[],lines:[],points:[]},"");return;
+ }
+ let text=c&&c.path===p?c.text:null;
+ if(!text&&isOnlineMode()){
+  try{const{data,error}=await sb.storage.from("documents").download(p);if(error)throw error;text=await data.text();await dbPut("meta",{key:"kml",path:p,text})}
+  catch(e){if(c&&c.text)text=c.text;else throw e}
+ }else if(!text&&c&&c.text){text=c.text}
+ if(text)setKml(parseKml(text),"NOTAM KML (şirket)");
+}
+async function loadKml(inp){
+ const f=inp.files&&inp.files[0];inp.value="";if(!f)return;
+ if(!isAdmin()){note("NOTAM KML dosyasını yalnızca yönetici yükleyebilir.");return}
+ if(!isOnlineMode()){note("KML paylaşmak için internet bağlantısı gerekir.");return}
+ if(f.size>8e6){note("KML dosyası çok büyük (en fazla 8 MB).");return}
+ try{
+  const text=await f.text();const k=parseKml(text);
+  if(!k.polygons.length&&!k.lines.length&&!k.points.length){note("KML içinde poligon, hat veya nokta bulunamadı.");return}
+  const path=`${S.co}/kml/${uuid()}.kml`;
+  const up=await sb.storage.from("documents").upload(path,new Blob([text],{type:"application/vnd.google-earth.kml+xml"}),{contentType:"application/vnd.google-earth.kml+xml"});if(up.error)throw up.error;
+  const old=S.company.kml_path;const u2=await sb.from("companies").update({kml_path:path}).eq("id",S.co);if(u2.error)throw u2.error;
+  S.company.kml_path=path;if(old)sb.storage.from("documents").remove([old]).catch(()=>{});
+  await dbPut("meta",{key:"kml",path,text});
+  setKml(k,f.name);if(Q.map)Q.map.fit(kmlBounds(k));
+  note(`${f.name}: ${k.polygons.length} saha, ${k.lines.length} hat, ${k.points.length} nokta yüklendi ve tüm cihazlara dağıtıldı.`);
+ }catch(e){note(e.message?errMsg(e):"KML okunamadı.")}
+}
+async function clearKml(){
+ if(!isAdmin()||!isOnlineMode())return;
+ try{
+  const old=S.company.kml_path;const u=await sb.from("companies").update({kml_path:null}).eq("id",S.co);if(u.error)throw u.error;
+  S.company.kml_path=null;if(old)sb.storage.from("documents").remove([old]).catch(()=>{});
+  await dbDel("meta","kml");setKml({polygons:[],lines:[],points:[]},"");
+ }catch(e){note("Silinemedi: "+errMsg(e))}
+}
+
+/* ---------- kilit ekranı bildirim köprüsü (Süre · İrtifa · Hız · Yön°) ---------- */
+function pushGpxNotif(askPerm,force){
+ if(Q.status!=="running")return;
+ const now=Date.now();
+ if(!force&&now-(Q.notifT||0)<NOTIF_MS)return;
+ Q.notifT=now;
+ const p=Q.live||Q.cur||(Q.pts.length?Q.pts[Q.pts.length-1]:null);
+ if(typeof AVNOTIF!=="undefined"&&AVNOTIF.showGpxStatus){
+  AVNOTIF.showGpxStatus({
+   startedAt:Q.t0,
+   now,
+   alt:p?p.ele:(Q.fix?Q.fix.alt:null),
+   gs:p?p.gs:(Q.fix?Q.fix.speed:0),
+   course:p?p.course:(Q.fix?Q.fix.heading:null),
+   callsign:callOn(),
+   sim:false,
+  },!!askPerm).catch(()=>{});
+ }
+}
+function clearGpxNotif(){
+ if(typeof AVNOTIF!=="undefined"&&AVNOTIF.clearGpxStatus){
+  AVNOTIF.clearGpxStatus().catch(()=>{});
+ }
+}
+function pushNotamNotif(nx){
+ if(nx.level==="clear"||!nx.zone)return;
+ if(document.visibilityState==="hidden"&&typeof AVNOTIF!=="undefined"&&AVNOTIF.showNotamAlert){
+  AVNOTIF.showNotamAlert(nx.level,nx.zone.name,nx.distance).catch(()=>{});
+ }
+}
+
+/* ---------- geofence (NOTAM): clear | near | inside ---------- */
+function checkFence(){
+ const f=Q.fix;if(!f){Q.fence={level:"clear"};return}
+ const p=[f.lat,f.lon];let hit=null,near=null;
+ for(const pg of Q.kml.polygons){
+  if(pointInPolygon(p,pg)){hit=pg;break}
+  let d=distToRingEdge(p,pg.outer);pg.holes.forEach(h=>{d=Math.min(d,distToRingEdge(p,h))});
+  if(d<WARN_M&&(!near||d<near.d))near={pg,d};
+ }
+ const nx=hit?{level:"inside",zone:hit}:near?{level:"near",zone:near.pg,distance:Math.round(near.d)}:{level:"clear"};
+ const key=nx.level+":"+(nx.zone?nx.zone.id:"");
+ if(key!==Q.fenceKey){
+  Q.fenceKey=key;
+  if(nx.level!=="clear"){
+   if(navigator.vibrate){try{navigator.vibrate([300,100,300])}catch(_){}}
+   pushNotamNotif(nx);
+  }
+ }
+ Q.fence=nx;
+}
+
+/* ---------- konum (iOS & Android Capacitor arka plan GPX + geoChain yarış koruması) ---------- */
+function geoMsg(e){return e&&e.code===1?"Konum izni verilmedi. Cihaz ayarlarından AviaDoX için Konum iznini 'Her Zaman' yapın.":e&&e.code===3?"Konum zaman aşımına uğradı, GPS sinyali bekleniyor.":"Konum alınamıyor (GPS sinyali yok veya cihaz desteklemiyor)."}
+const due=(lp,t)=>!lp||t-lp.ts>=PT_MS-500;
+const BG=(()=>{try{const C=window.Capacitor;if(C&&C.isNativePlatform&&C.isNativePlatform())return(C.Plugins&&C.Plugins.BackgroundGeolocation)||C.registerPlugin("BackgroundGeolocation")}catch(_){}return null})();
+const isIOS=()=>/iPhone|iPad|iPod/i.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+function toPos(l){
+ return{
+  coords:{
+   latitude:l.latitude,
+   longitude:l.longitude,
+   altitude:l.altitude!=null&&isFinite(l.altitude)?l.altitude:null,
+   speed:l.speed!=null&&isFinite(l.speed)&&l.speed>=0?l.speed:null,
+   heading:l.bearing!=null&&isFinite(l.bearing)&&l.bearing>=0?l.bearing:null,
+   accuracy:l.accuracy!=null&&isFinite(l.accuracy)?l.accuracy:null,
+  },
+  timestamp:l.time||Date.now(),
+ };
+}
+
+let geoChain=Promise.resolve();
+function startGeo(bg){
+ geoChain=geoChain.then(async()=>{
+  if(Q.watch!=null)return;
+  if(BG){
+   const opts={requestPermissions:true,stale:false,distanceFilter:0};
+   if(bg){
+    opts.backgroundTitle="AviaDoX · GPX Kaydı Aktif";
+    opts.backgroundMessage="Uçuş kaydı sürüyor. Konum arka planda kaydediliyor.";
+   }
+   try{
+    Q.watch=await BG.addWatcher(opts,(loc,err)=>{
+     if(err){
+      Q.err=err.code==="NOT_AUTHORIZED"
+       ?(isIOS()?"Konum izni verilmedi. Ayarlar > Gizlilik > Konum Servisleri > AviaDoX > Her Zaman.":"Konum izni verilmedi. Ayarlar > Uygulamalar > AviaDoX > İzinler > Konum > Her zaman izin ver.")
+       :"Konum alınamıyor.";
+      if(document.visibilityState!=="hidden")ui();
+      return;
+     }
+     if(loc)onPos(toPos(loc));
+    });
+   }catch(e){Q.err="Konum başlatılamadı: "+errMsg(e);if(document.visibilityState!=="hidden")ui()}
+   return;
+  }
+  if(!navigator.geolocation){Q.err="Bu cihaz/tarayıcı konum desteklemiyor.";ui();return}
+  try{Q.watch=navigator.geolocation.watchPosition(onPos,e=>{Q.err=geoMsg(e);ui()},{enableHighAccuracy:true,maximumAge:0,timeout:20000})}catch(e){Q.err=geoMsg(e);ui()}
+ }).catch(()=>{});
+ return geoChain;
+}
+function stopGeo(){
+ geoChain=geoChain.then(async()=>{
+  const w=Q.watch;Q.watch=null;if(w==null)return;
+  if(BG){try{await BG.removeWatcher({id:w})}catch(_){}}
+  else if(navigator.geolocation)navigator.geolocation.clearWatch(w);
+ }).catch(()=>{});
+ return geoChain;
+}
+function restartGeo(bg){return stopGeo().then(()=>startGeo(bg))}
+
+function bgPersist(t){
+ if(Q.pts.length>1&&t-(Q.draftT||0)>=15000){Q.draftT=t;dbPut("meta",{key:"draft",t0:Q.t0,pts:Q.pts})}
+ if(Q.share&&t-(Q.pubT||0)>=PUB_MS){Q.pubT=t;pubPos()}
+ if(t-(Q.notifT||0)>=NOTIF_MS){pushGpxNotif(false,false)}
+}
+
+function onPos(pos){
+ Q.raw=pos;const c=pos.coords;
+ const hidden=document.visibilityState==="hidden";
+ if(BG&&Q.status==="running"){
+  const lp=Q.pts.length?Q.pts[Q.pts.length-1]:null;
+  // Geri giden zaman damgası veya 150 m üzeri hatalı GPS sıçraması koruması
+  const badAcc=c.accuracy!=null&&isFinite(c.accuracy)&&c.accuracy>150&&Q.pts.length>0;
+  if((!lp||pos.timestamp>lp.ts)&&!badAcc){
+   const p=makePoint(pos,lp);
+   Q.live=p;
+   if(due(lp,pos.timestamp)){
+    if(Q.pendingGap){p.gapBefore=true;Q.pendingGap=false}
+    Q.pts.push(p);Q.cur=p;
+   }
+   bgPersist(pos.timestamp);
+  }
+ }
+ Q.fix={lat:c.latitude,lon:c.longitude,acc:c.accuracy,heading:c.heading,speed:c.speed,alt:c.altitude,ts:pos.timestamp};Q.err="";
+ if(Q.status!=="running")Q.cur=Q.prevP=makePoint(pos,Q.prevP);
+ checkFence();
+ if(Q.map){
+  if(!Q.centered){Q.centered=true;Q.map.setView(Q.fix.lat,Q.fix.lon,14)}
+  else if(Q.follow)Q.map.center(Q.fix.lat,Q.fix.lon);
+  if(!hidden)Q.map.redraw();
+ }
+ if(!hidden)ui();
+}
+
+/* ---------- oturum: Start / Stop ---------- */
+const elapsed=()=>Q.status==="running"?Q.now-Q.t0:Q.status==="stopped"?Q.t1-Q.t0:0;
+async function wakeOn(){try{if(Q.wake){try{await Q.wake.release()}catch(_){}Q.wake=null}if(navigator.wakeLock){Q.wake=await navigator.wakeLock.request("screen");Q.wake.addEventListener&&Q.wake.addEventListener("release",()=>{Q.wake=null;ui()})}}catch(_){Q.wake=null}ui()}
+const locKey=()=>"aviadox-locok2-"+(typeof S!=="undefined"&&S.user?S.user.id:"x")+"-"+(typeof POLICY_VER==="function"?POLICY_VER():"1");
+const locOk=()=>{try{return localStorage.getItem(locKey())==="1"}catch(_){return false}};
+function askLoc(){return new Promise(res=>{if(locOk())return res(true);
+ const o=document.createElement("div");o.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px";
+ o.innerHTML='<div class="card" style="max-width:420px;margin:0"><b>📍 Konum izni</b><p class="mu" style="margin:8px 0">Uçuş kaydı için konumunuz (enlem, boylam, yükseklik, hız, yön) yalnızca <b>Start ile Stop arasında</b> alınır. Android ve iOS uygulamalarında ekran kapalıyken de kayıt sürer ve kilit ekranında durum bildirimi görünür. Uçuş kaydı <b>açıkken</b> (internet varsa) konumunuz haritada aynı şirketteki diğer kullanıcılara canlı gösterilir (Stop ile paylaşım biter; kapatmak için haritadaki "Ekiple paylaş" kutusunu kaldırabilirsiniz). Kayıtlı uçuş izlerini yalnızca siz görürsünüz.</p><label style="display:flex;gap:10px;align-items:flex-start;font-size:14px"><input type="checkbox" id="lc" style="width:auto;margin:3px 0 0"><span>Uçuş kaydı için konumumun işlenmesine ve uçuş sırasında şirketimdeki kullanıcılarla canlı paylaşılmasına açık rıza veriyorum.</span></label><div style="display:flex;gap:8px;margin-top:12px"><button id="lok" disabled>Kabul ediyorum</button><button class="sec" id="lno">Vazgeç</button></div></div>';
+ document.body.appendChild(o);const ck=o.querySelector("#lc"),ok=o.querySelector("#lok");ck.onchange=()=>{ok.disabled=!ck.checked};
+ ok.onclick=()=>{try{localStorage.setItem(locKey(),"1")}catch(_){}if(isOnlineMode()){try{sb.rpc("accept_privacy",{ver:typeof POLICY_VER==="function"?POLICY_VER():"1",loc:true}).then(()=>{},()=>{})}catch(_){}}o.remove();res(true)};
+ o.querySelector("#lno").onclick=()=>{o.remove();res(false)}})}
+
+/* ---------- canlı konum paylaşımı ---------- */
+const PEER_TTL=120000,PUB_MS=5000;
+const csKey=()=>"aviadox-call-"+(S.user?S.user.id:"x");
+function callOn(){try{return(localStorage.getItem(csKey())||"").trim()}catch(_){return""}}
+const peerName=p=>(p.callsign?p.callsign+" · ":"")+p.name;
+const shKey=()=>"aviadox-share-"+(S.user?S.user.id:"x");
+function shareOn(){try{return localStorage.getItem(shKey())!=="0"}catch(_){return true}}
+function peerList(){const n=Date.now();return Object.values(Q.peers||{}).filter(p=>p.user_id!==(S.user&&S.user.id)&&n-p.t<PEER_TTL)}
+function peerRow(r){return{callsign:r.callsign||"",user_id:r.user_id,name:r.name||"?",lat:r.lat,lon:r.lon,alt:r.alt,speed:r.speed,heading:r.heading,t:new Date(r.updated_at).getTime()}}
+function peersUi(){const el=Q.root&&Q.root.querySelector(".fl-peers");if(!el)return;const l=peerList();el.textContent=l.length?"👥 Haritada: "+l.map(p=>peerName(p)+(p.alt!=null?" ("+Math.round(p.alt)+" m)":"")).join(", "):""}
+async function peersStart(){
+ if(Q.peerCh||!Q.co||!isOnlineMode())return;
+ Q.peers={};
+ try{const{data}=await sb.from("live_pos").select("*").gte("updated_at",new Date(Date.now()-PEER_TTL).toISOString());(data||[]).forEach(r=>{Q.peers[r.user_id]=peerRow(r)})}catch(_){}
+ try{Q.peerCh=sb.channel("livepos-"+Q.co).on("postgres_changes",{event:"*",schema:"public",table:"live_pos",filter:"company_id=eq."+Q.co},pl=>{
+  if(pl.eventType==="DELETE"){const o=pl.old&&pl.old.user_id;if(o)delete Q.peers[o]}else if(pl.new&&pl.new.user_id)Q.peers[pl.new.user_id]=peerRow(pl.new);
+  if(Q.map&&document.visibilityState!=="hidden")Q.map.redraw();peersUi()}).subscribe()}catch(_){}
+ clearInterval(Q.peerT);Q.peerT=setInterval(()=>{if(document.visibilityState!=="hidden"){if(Q.map)Q.map.redraw();peersUi()}},15000);
+ if(Q.map)Q.map.redraw();peersUi();
+}
+function peersStop(){clearInterval(Q.peerT);Q.peerT=null;if(Q.peerCh&&typeof sb!=="undefined"&&sb){try{sb.removeChannel(Q.peerCh)}catch(_){}Q.peerCh=null}Q.peers={}}
+async function pubPos(){
+ if(!Q.share||Q.status!=="running"||!Q.cur||!isOnlineMode())return;
+ const p=Q.live||Q.cur;
+ try{await sb.from("live_pos").upsert({user_id:S.user.id,company_id:S.co,name:pilotName(),lat:p.lat,lon:p.lon,alt:p.ele==null?null:p.ele,speed:p.gs==null?null:p.gs,heading:p.course==null?null:p.course,callsign:callOn()||null,updated_at:new Date().toISOString()})}catch(_){}
+}
+async function pubClear(){if(!isOnlineMode())return;try{await sb.from("live_pos").delete().eq("user_id",S.user.id)}catch(_){}}
+
+function start(){
+ if(Q.status==="running")return;
+ if(!locOk()){askLoc().then(ok=>{if(ok){startGeo(false);note("Konum başlatılıyor. Konum gelince Start'a tekrar bas.")}});return}
+ if(!Q.fix){note("Henüz konum alınamadı. Konum iznini verin ve GPS sinyalini bekleyin.");return}
+ Q.pts=[];Q.cur=null;Q.live=null;Q.prevP=null;Q.last=null;Q.pendingGap=false;Q.gapMsg="";Q.gapSec=0;Q.hidAt=0;Q.draft=null;Q.draftT=0;Q.notifT=0;
+ Q.t0=Date.now();Q.now=Q.t0;Q.status="running";Q.follow=true;Q.fenceKey="";
+ // Kalkış anı ilk noktasını garanti altına al
+ if(Q.raw){const p0=makePoint({coords:Q.raw.coords,timestamp:Q.t0},null);Q.pts.push(p0);Q.cur=p0;Q.live=p0}
+ checkFence();wakeOn();restartGeo(true);
+ Q.share=shareOn();Q.pubT=0;
+ pushGpxNotif(true,true);
+ Q.timer=setInterval(tick,1000);
+ if(Q.map){Q.map.center(Q.fix.lat,Q.fix.lon);Q.map.redraw()}
+ ui();
+}
+function tick(){
+ const now=Date.now(),raw=Q.raw;Q.now=now;
+ const lastP=Q.pts.length?Q.pts[Q.pts.length-1]:null;
+ if(!BG&&raw&&now-raw.timestamp<=FIX_MAX_AGE){
+  const p=makePoint({coords:raw.coords,timestamp:now},lastP);Q.live=p;
+  if(due(lastP,now)){if(Q.pendingGap){p.gapBefore=true;Q.pendingGap=false}Q.pts.push(p);Q.cur=p}
+ }
+ if(Q.pts.length>1&&now-Q.draftT>=15000){Q.draftT=now;dbPut("meta",{key:"draft",t0:Q.t0,pts:Q.pts})}
+ if(Q.share&&now-(Q.pubT||0)>=PUB_MS){Q.pubT=now;pubPos()}
+ if(now-(Q.notifT||0)>=NOTIF_MS){pushGpxNotif(false,false)}
+ if(document.visibilityState!=="hidden"){if(Q.map)Q.map.redraw();ui()}
+}
+async function stop(){
+ if(Q.status!=="running")return;
+ clearInterval(Q.timer);Q.timer=null;
+ try{if(Q.wake)await Q.wake.release()}catch(_){}Q.wake=null;
+ Q.t1=Date.now();Q.status="stopped";Q.follow=false;
+ clearGpxNotif();
+ await restartGeo(false);
+ pubClear();
+ const pts=Q.pts;await dbDel("meta","draft");
+ if(pts.length<2){note("Uçuş çok kısa: kaydedilecek yeterli veri yok (en az 2 nokta).");ui();return}
+ await finalize(pts,Q.t0,Q.t1);
+}
+async function finalize(pts,t0,t1){
+ const name=flightFileName(new Date(t0));
+ const rec={id:(typeof crypto!=="undefined"&&crypto.randomUUID?crypto.randomUUID():String(t0)+Math.random().toString(16).slice(2)),name,createdAt:t0,startedAt:t0,endedAt:t1,...flightStats(pts),pointCount:pts.length,pilotName:pilotName(),gpx:buildGpx(pts,{name,startedAt:t0})};
+ await dbPut("flights",rec);Q.last=rec;ui();
+ if(isOnlineMode())await syncFlight(rec);
+ await refreshFlights();
+}
+async function checkDraft(){if(Q.status!=="idle")return;const d=await dbGet("meta","draft");if(d&&d.pts&&d.pts.length>=2&&Q.status==="idle"){Q.draft=d;ui()}}
+async function draftSave(){const d=Q.draft;if(!d)return;Q.draft=null;try{await finalize(d.pts,d.t0,d.pts[d.pts.length-1].ts)}catch(e){note("Kurtarılamadı: "+errMsg(e))}await dbDel("meta","draft");ui()}
+async function draftDel(){Q.draft=null;await dbDel("meta","draft");ui()}
+
+/* ---------- uçuş kırpma ---------- */
+function parseGpxPts(text){const doc=new DOMParser().parseFromString(text,"application/xml");if(doc.querySelector("parsererror"))throw new Error("GPX okunamadı");
+ const ns=(el,t)=>Array.from(el.getElementsByTagNameNS("*",t));const num=(el,t)=>{const n=ns(el,t)[0];if(!n)return null;const v=parseFloat(n.textContent);return isFinite(v)?v:null};
+ const pts=[];ns(doc,"trkseg").forEach((sg,si)=>ns(sg,"trkpt").forEach((tp,i)=>{const tm=ns(tp,"time")[0],ts=tm?Date.parse(tm.textContent):NaN;if(!isFinite(ts))return;
+  pts.push({ts,t:new Date(ts).toISOString(),lat:parseFloat(tp.getAttribute("lat")),lon:parseFloat(tp.getAttribute("lon")),ele:num(tp,"ele"),gpsAlt:num(tp,"gpsAlt"),baroAlt:num(tp,"baroAlt"),gs:num(tp,"speed")||0,course:num(tp,"course"),vs:num(tp,"vspeed")||0,windSpeed:num(tp,"windSpeed")||0,windFrom:num(tp,"windFrom"),gapBefore:si>0&&i===0})}));
+ return pts}
+function trimCalc(){const pts=Q.trimPts;if(!pts||pts.length<2)return null;const hm=Math.max(0,parseFloat(Q.trimH)||0)*6e4,tm=Math.max(0,parseFloat(Q.trimT)||0)*6e4,s=pts[0].ts+hm,e=pts[pts.length-1].ts-tm;
+ const kept=pts.filter(p=>p.ts>=s&&p.ts<=e);const ok=kept.length>=2&&e-s>=1e4;return{hm,tm,kept,ok,ms:Math.max(0,e-s),total:pts[pts.length-1].ts-pts[0].ts}}
+function trimPreview(){const el=Q.root&&Q.root.querySelector(".fl-tprev");if(!el)return;const c=trimCalc();if(!c){el.textContent="";return}
+ el.textContent=!c.hm&&!c.tm?`Mevcut süre ${fmtDur(c.total)}`:c.ok?`Yeni süre ${fmtDur(c.ms)} (${c.kept.length} nokta). Silinecek: ${fmtDur(c.total-c.ms)}`:"Çok fazla kırpılıyor: geriye en az 10 saniyelik uçuş kalmalı."}
+async function openTrim(rec){if(Q.trimId===rec.id){Q.trimId=null;renderLog();return}
+ try{rec=await withGpx(rec);Q.trimPts=parseGpxPts(rec.gpx);Q.trimId=rec.id;Q.trimH="";Q.trimT="";Q.trimSure=false;renderLog();trimPreview()}catch(e){note("Uçuş açılamadı: "+errMsg(e))}}
+async function trimGo(rec){const c=trimCalc();if(!c||(!c.hm&&!c.tm)){note("Kırpılacak süreyi dakika olarak girin.");return}
+ if(!c.ok){note("Çok fazla kırpılıyor: geriye en az 10 saniyelik uçuş kalmalı.");return}
+ if(!Q.trimSure){Q.trimSure=true;renderLog();trimPreview();return}
+ try{
+  rec=await withGpx(rec);const kept=c.kept.map((p,i)=>i===0&&p.gapBefore?{...p,gapBefore:false}:p),t0=kept[0].ts,t1=kept[kept.length-1].ts,name=flightFileName(new Date(t0)),gpx=buildGpx(kept,{name,startedAt:t0});
+  const nr={...rec,gpx,name,createdAt:t0,startedAt:t0,endedAt:t1,...flightStats(kept),pointCount:kept.length};
+  if((rec.synced||rec.filePath)&&isOnlineMode()){
+   const gzb=await gzip(gpx),path=`${S.co}/flights/${rec.id}-${Date.now()}${gzb?".gpx.gz":".gpx"}`,blob=gzb||new Blob([gpx],{type:"application/gpx+xml"});
+   const up=await sb.storage.from("documents").upload(path,blob,{contentType:gzb?"application/gzip":"application/octet-stream"});if(up.error)throw up.error;
+   const u=await sb.from("flights").update({name,started_at:new Date(t0).toISOString(),ended_at:new Date(t1).toISOString(),duration_sec:nr.durationSec,max_alt:nr.maxAlt,distance_m:nr.distanceM,point_count:nr.pointCount,file_path:path}).eq("id",rec.id).select("id");
+   if(u.error||!u.data||!u.data.length){sb.storage.from("documents").remove([path]).catch(()=>{});throw u.error||new Error("Sunucuda güncelleme izni yok (9. SQL çalıştırılmalı).")}
+   if(rec.filePath)sb.storage.from("documents").remove([rec.filePath]).catch(()=>{});nr.filePath=path;nr.synced=true;
+  }
+  await dbPut("flights",nr);if(Q.last&&Q.last.id===rec.id)Q.last=null;Q.trimId=null;Q.trimSure=false;await refreshFlights();note("Kırpıldı. Yeni süre "+fmtDur(nr.durationSec*1000)+".");
+ }catch(e){Q.trimSure=false;renderLog();trimPreview();note("Kırpılamadı: "+errMsg(e))}
+}
+
+/* ---------- paylaşım / indirme (Capacitor 6 uyumlu) ---------- */
+function capPlugin(name){
+ const C=window.Capacitor;
+ if(!C||!C.isNativePlatform||!C.isNativePlatform())return null;
+ return(C.Plugins&&C.Plugins[name])||(C.registerPlugin?C.registerPlugin(name):null);
+}
+async function nativeShare(rec){
+ const Fs=capPlugin("Filesystem"),Sh=capPlugin("Share");
+ if(!Fs||!Sh)throw new Error("Yerel paylaşım eklentisi bulunamadı.");
+ const r=await Fs.writeFile({path:rec.name,data:rec.gpx,directory:"CACHE",encoding:"utf8"});
+ await Sh.share({title:rec.name,text:"Balon uçuş kaydı (GPX)",url:r.uri,dialogTitle:"GPX dosyasını paylaş / kaydet"});
+}
+async function saveGpx(rec){
+ try{
+  rec=await withGpx(rec);
+  if(BG){await nativeShare(rec);return}
+  const url=URL.createObjectURL(new Blob([rec.gpx],{type:"application/gpx+xml"}));
+  const a=document.createElement("a");a.href=url;a.download=rec.name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),5000);note("GPX indirildi: "+rec.name);
+ }catch(e){note("Dosya kaydedilemedi: "+errMsg(e))}
+}
+async function share(rec){
+ try{rec=await withGpx(rec)}catch(e){note("GPX dosyası alınamadı: "+errMsg(e));return}
+ if(BG){try{await nativeShare(rec)}catch(e){if(!/cancel/i.test(errMsg(e)))note("Paylaşılamadı: "+errMsg(e))}return}
+ for(const type of["application/gpx+xml","application/octet-stream","text/plain"]){
+  try{const f=new File([rec.gpx],rec.name,{type});if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:rec.name,text:"Balon uçuş kaydı (GPX)"});return}}catch(e){if(e&&e.name==="AbortError")return}
+ }
+ note("Bu cihaz paylaşımı desteklemiyor, dosya indiriliyor.");await saveGpx(rec);
+}
+
+/* ---------- uyarı notu ---------- */
+function note(m,ms){Q.note=m;clearTimeout(Q.noteT);Q.noteT=setTimeout(()=>{Q.note="";ui()},ms||6000);ui()}
+
+/* ---------- harita (canvas): uydu karoları + KML + rota + konum ---------- */
+function createMap(host,cb){
+ const cv=document.createElement("canvas");host.appendChild(cv);const ctx=cv.getContext("2d");
+ const pop=document.createElement("div");pop.className="fl-pop";pop.hidden=true;host.appendChild(pop);
+ const V={lat:38.65,lon:34.83,z:10,w:0,h:0,dpr:1},tiles=new Map();let raf=0,pfit=null,tOk=0,tErr=0;
+ const MX=(lo,z)=>(lo+180)/360*256*2**z;
+ const MY=(la,z)=>{const s=Math.sin(Math.max(-85.05,Math.min(85.05,la))*Math.PI/180);return(0.5-Math.log((1+s)/(1-s))/(4*Math.PI))*256*2**z};
+ const LON=(x,z)=>x/(256*2**z)*360-180;
+ const LAT=(y,z)=>180/Math.PI*Math.atan(Math.sinh(Math.PI-2*Math.PI*y/(256*2**z)));
+ const org=()=>[MX(V.lon,V.z)-V.w/2,MY(V.lat,V.z)-V.h/2];
+ const req=()=>{if(!raf)raf=requestAnimationFrame(draw)};
+ function tile(z,x,y){const k=z+"/"+x+"/"+y;let t=tiles.get(k);if(!t){t=new Image();t.decoding="async";t.onload=()=>{t.ok=1;tOk++;req()};t.onerror=()=>{t.bad=1;tErr++;req()};t.src=TILE.replace("{z}",z).replace("{y}",y).replace("{x}",x);tiles.set(k,t);if(tiles.size>500)tiles.delete(tiles.keys().next().value)}return t}
+ function draw(){
+  raf=0;if(!V.w)return;const c=ctx,Qs=cb.state();c.setTransform(V.dpr,0,0,V.dpr,0,0);c.fillStyle="#0b1118";c.fillRect(0,0,V.w,V.h);
+  const[ox,oy]=org(),tz=Math.max(0,Math.min(19,Math.round(V.z))),sz=256*2**(V.z-tz),n=2**tz;
+  const x0=Math.floor(ox/sz),x1=Math.floor((ox+V.w)/sz),y0=Math.max(0,Math.floor(oy/sz)),y1=Math.min(n-1,Math.floor((oy+V.h)/sz));
+  if(navigator.onLine){
+   for(let ty=y0;ty<=y1;ty++)for(let tx=x0;tx<=x1;tx++){const im=tile(tz,((tx%n)+n)%n,ty);if(im.ok)c.drawImage(im,Math.round(tx*sz-ox),Math.round(ty*sz-oy),Math.ceil(sz)+1,Math.ceil(sz)+1)}
+  }
+  const P=q=>[MX(q[1],V.z)-ox,MY(q[0],V.z)-oy],ring=r=>r.forEach((q,i)=>{const p=P(q);i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1])});
+  c.lineJoin="round";c.lineCap="round";
+  for(const pg of Qs.kml.polygons){c.beginPath();ring(pg.outer);c.closePath();pg.holes.forEach(h=>{ring(h);c.closePath()});c.fillStyle="rgba(255,90,77,.25)";c.fill("evenodd");c.strokeStyle="rgba(255,90,77,.95)";c.lineWidth=2;c.stroke()}
+  for(const l of Qs.kml.lines){c.beginPath();ring(l.path);c.strokeStyle="rgba(77,171,247,.9)";c.lineWidth=3;c.stroke()}
+  c.font="12px system-ui,sans-serif";
+  for(const p of Qs.kml.points){const q=P(p.pos);c.beginPath();c.arc(q[0],q[1],6,0,6.2832);c.fillStyle="rgba(240,140,0,.9)";c.fill();c.strokeStyle="#fff";c.lineWidth=2;c.stroke();if(V.z>=12){c.lineWidth=3;c.strokeStyle="rgba(0,0,0,.7)";c.strokeText(p.name,q[0]+9,q[1]+4);c.fillStyle="#fff";c.fillText(p.name,q[0]+9,q[1]+4)}}
+  if(Qs.pts.length>1){c.beginPath();Qs.pts.forEach((p,i)=>{const q=P([p.lat,p.lon]);i&&!p.gapBefore?c.lineTo(q[0],q[1]):c.moveTo(q[0],q[1])});c.strokeStyle="#ffb000";c.lineWidth=4;c.stroke()}
+  {const now=Date.now();for(const p of Qs.peers?Object.values(Qs.peers):[]){if(p.user_id===(S.user&&S.user.id)||now-p.t>PEER_TTL)continue;const q=P([p.lat,p.lon]);
+   if(p.heading!=null&&isFinite(p.heading)&&(p.speed||0)>0.5){c.save();c.translate(q[0],q[1]);c.rotate(rad(p.heading));c.beginPath();c.moveTo(0,-18);c.lineTo(5,-9);c.lineTo(-5,-9);c.closePath();c.fillStyle="#4dabf7";c.fill();c.restore()}
+   c.beginPath();c.arc(q[0],q[1],7,0,6.2832);c.fillStyle="#4dabf7";c.fill();c.strokeStyle="#fff";c.lineWidth=2.5;c.stroke();
+   const lb=peerName(p)+(p.alt!=null?" · "+Math.round(p.alt)+" m":"")+(now-p.t>30000?" ·"+Math.round((now-p.t)/1000)+"sn":"");c.font="12px system-ui,sans-serif";c.lineWidth=3;c.strokeStyle="rgba(0,0,0,.75)";c.strokeText(lb,q[0]+10,q[1]+4);c.fillStyle="#fff";c.fillText(lb,q[0]+10,q[1]+4)}}
+  const f=Qs.fix;if(f){const q=P([f.lat,f.lon]),mpp=156543.03392*Math.cos(rad(f.lat))/2**V.z,ar=(f.acc||0)/mpp;
+   if(ar>14){c.beginPath();c.arc(q[0],q[1],ar,0,6.2832);c.fillStyle="rgba(255,176,0,.12)";c.fill()}
+   c.beginPath();c.arc(q[0],q[1],14,0,6.2832);c.fillStyle="rgba(255,176,0,.35)";c.fill();
+   if(f.heading!=null&&isFinite(f.heading)&&f.heading>=0&&(f.speed||0)>0.5){c.save();c.translate(q[0],q[1]);c.rotate(rad(f.heading));c.beginPath();c.moveTo(0,-20);c.lineTo(6,-10);c.lineTo(-6,-10);c.closePath();c.fillStyle="#ffb000";c.fill();c.restore()}
+   c.beginPath();c.arc(q[0],q[1],8,0,6.2832);c.fillStyle="#ffb000";c.fill();c.strokeStyle="#fff";c.lineWidth=3;c.stroke()}
+  c.font="10px system-ui,sans-serif";c.textAlign="right";c.fillStyle="rgba(255,255,255,.75)";c.fillText("Esri, Maxar, Earthstar Geographics",V.w-6,V.h-5);c.textAlign="left";
+  if(!navigator.onLine||(tErr>=4&&tOk===0)){c.fillStyle="rgba(11,17,24,.75)";c.fillRect(0,V.h-44,V.w,26);c.fillStyle="#ffb000";c.font="12px system-ui,sans-serif";c.textAlign="center";c.fillText(typeof I18N!=="undefined"?I18N.tx("Çevrimdışı harita: GPS izi kaydedilmeye devam eder"):"Çevrimdışı harita: GPS izi kaydedilmeye devam eder",V.w/2,V.h-27);c.textAlign="left"}
+ }
+ function hide(){pop.hidden=true}
+ function show(it,sx,sy){if(!it){hide();return}pop.textContent="";const x=document.createElement("button");x.textContent="✕";x.setAttribute("aria-label","Kapat");x.onclick=hide;const b=document.createElement("b");b.textContent=it.name;pop.append(x,b);
+  if(it.description){const d=document.createElement("div");d.style.whiteSpace="pre-wrap";d.textContent=it.description;pop.append(d)}pop.hidden=false;
+  pop.style.left=Math.max(8,Math.min(V.w-pop.offsetWidth-8,sx-pop.offsetWidth/2))+"px";const top=sy+16+pop.offsetHeight>V.h?sy-pop.offsetHeight-16:sy+16;pop.style.top=Math.max(8,top)+"px"}
+ function tap(sx,sy){const[ox,oy]=org(),Qs=cb.state(),P=q=>[MX(q[1],V.z)-ox,MY(q[0],V.z)-oy];let hit=null;
+  for(const p of Qs.kml.points){const q=P(p.pos);if(Math.hypot(q[0]-sx,q[1]-sy)<18){hit=p;break}}
+  if(!hit)for(const l of Qs.kml.lines){let m=1e9;for(let i=1;i<l.path.length;i++){const a=P(l.path[i-1]),b=P(l.path[i]);m=Math.min(m,distSeg(sx,sy,a[0],a[1],b[0],b[1]))}if(m<14){hit=l;break}}
+  if(!hit){const q=[LAT(oy+sy,V.z),LON(ox+sx,V.z)];for(const pg of Qs.kml.polygons)if(pointInPolygon(q,pg)){hit=pg;break}}show(hit,sx,sy)}
+ function panBy(dx,dy){V.lon=LON(MX(V.lon,V.z)-dx,V.z);V.lat=Math.max(-85,Math.min(85,LAT(MY(V.lat,V.z)-dy,V.z)));req()}
+ function zoomAt(sx,sy,nz){nz=Math.max(3,Math.min(19,nz));const[ox,oy]=org(),lo=LON(ox+sx,V.z),la=LAT(oy+sy,V.z);V.z=nz;V.lon=LON(MX(lo,nz)-sx+V.w/2,nz);V.lat=Math.max(-85,Math.min(85,LAT(MY(la,nz)-sy+V.h/2,nz)));req()}
+ const ptr=new Map();let st=null,pd=0;
+ const loc=e=>{const r=cv.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]};
+ cv.addEventListener("pointerdown",e=>{try{cv.setPointerCapture(e.pointerId)}catch(_){}const l=loc(e);ptr.set(e.pointerId,{x:l[0],y:l[1]});if(ptr.size===1)st={x:l[0],y:l[1],moved:false,t:Date.now()};else{if(st)st.moved=true;const a=Array.from(ptr.values());pd=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y)}});
+ cv.addEventListener("pointermove",e=>{const p=ptr.get(e.pointerId);if(!p)return;const l=loc(e);
+  if(ptr.size===1){if(!st.moved){if(Math.hypot(l[0]-st.x,l[1]-st.y)<6)return;st.moved=true;hide();if(cb.state().follow)cb.onBreak()}panBy(l[0]-p.x,l[1]-p.y);p.x=l[0];p.y=l[1]}
+  else if(ptr.size===2){p.x=l[0];p.y=l[1];const a=Array.from(ptr.values()),d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);if(pd>0&&d>0){const fol=cb.state().follow;zoomAt(fol?V.w/2:(a[0].x+a[1].x)/2,fol?V.h/2:(a[0].y+a[1].y)/2,V.z+Math.log2(d/pd))}pd=d}});
+ const up=e=>{if(!ptr.has(e.pointerId))return;ptr.delete(e.pointerId);if(ptr.size===0&&st&&!st.moved&&e.type==="pointerup"&&Date.now()-st.t<600)tap(st.x,st.y);if(ptr.size<2)pd=0};
+ cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",up);
+ cv.addEventListener("wheel",e=>{e.preventDefault();const l=loc(e),fol=cb.state().follow;zoomAt(fol?V.w/2:l[0],fol?V.h/2:l[1],V.z-Math.sign(e.deltaY)*0.5)},{passive:false});
+ function resize(){const w=host.clientWidth,h=host.clientHeight;if(!w||!h)return;V.dpr=Math.min(2,window.devicePixelRatio||1);V.w=w;V.h=h;cv.width=Math.round(w*V.dpr);cv.height=Math.round(h*V.dpr);if(pfit){const b=pfit;pfit=null;fit(b)}req()}
+ function fit(b){if(!V.w){pfit=b;return}const dx=MX(b.maxLon,0)-MX(b.minLon,0),dy=MY(b.minLat,0)-MY(b.maxLat,0);let z=16;if(dx>0||dy>0)z=Math.log2(Math.min(dx>0?V.w*0.85/dx:1e9,dy>0?V.h*0.85/dy:1e9));
+  V.z=Math.max(3,Math.min(16,z));V.lon=(b.minLon+b.maxLon)/2;V.lat=LAT((MY(b.minLat,V.z)+MY(b.maxLat,V.z))/2,V.z);hide();req()}
+ let ro=null;if(window.ResizeObserver){ro=new ResizeObserver(resize);ro.observe(host)}else window.addEventListener("resize",resize);
+ return{resize,redraw:req,fit,setView(la,lo,z){V.lat=la;V.lon=lo;V.z=z;req()},center(la,lo){V.lat=la;V.lon=lo;req()},zoomBy(d){zoomAt(V.w/2,V.h/2,V.z+d)},destroy(){if(ro)ro.disconnect();else window.removeEventListener("resize",resize);cancelAnimationFrame(raf);tiles.clear()}}
+}
+
+/* ---------- arayüz ---------- */
+function build(){const r=document.createElement("div");r.className="fl";
+ r.innerHTML=`<div class="fl-tabs"><button data-act="sub" data-v="map" class="on">🗺️ Harita</button><button data-act="sub" data-v="log">📁 Kayıtlar<span class="fl-cnt"></span></button></div>
+<div class="fl-pane fl-p-map">
+ <div class="fl-bar"><div class="fl-timer">00:00:00</div><button class="fl-go" data-act="go">Start</button></div>
+ <div class="fl-telem"><div><b class="t-alt">–</b><span>Yükseklik m</span></div><div><b class="t-gs">–</b><span>Yer hızı km/sa</span></div><div><b class="t-vs">–</b><span>Dikey hız m/s</span></div><div><b class="t-wd">–</b><span>Rüzgar yön° / km/sa</span></div></div>
+ <div class="fl-alerts"></div>
+ <div class="fl-mapwrap"><button class="fl-rc" data-act="rc" hidden>Merkeze al</button><div class="fl-zoom"><button data-act="zi" aria-label="Yakınlaştır">+</button><button data-act="zo" aria-label="Uzaklaştır">−</button></div></div>
+ <div class="fl-pos mu"></div>
+ <div class="fl-peers mu"></div>
+ <div class="fl-kml"><label class="fl-file" ${isAdmin()?"":"hidden"}>📍 NOTAM KML yükle<input type="file" class="fl-kfile" accept=".kml,.xml,application/vnd.google-earth.kml+xml,application/xml,text/xml"></label><span class="fl-kinfo mu"></span><button class="ghost" data-act="kfit" hidden>KML'ye git</button><button class="ghost" data-act="kclr" hidden>Temizle</button><label class="fl-simlbl">Balon çağrı kodu <select class="fl-cs" style="width:130px;display:inline-block"></select></label><label class="fl-simlbl"><input type="checkbox" class="fl-shr"> Ekiple paylaş</label></div>
+</div>
+<div class="fl-pane fl-p-log" hidden><div class="fl-list"></div></div>`;
+ Q.root=r;Q.share=shareOn();r.querySelector(".fl-shr").checked=Q.share;Q.map=createMap(r.querySelector(".fl-mapwrap"),{state:()=>Q,onBreak:()=>{Q.follow=false;ui()}});
+ r.addEventListener("input",e=>{const t=e.target&&e.target.dataset&&e.target.dataset.trim;if(!t)return;if(t==="h")Q.trimH=e.target.value;else Q.trimT=e.target.value;if(Q.trimSure){Q.trimSure=false;const b=r.querySelector('[data-act="trimgo"]');if(b)b.textContent="Kırp ve kaydet"}trimPreview()});
+ r.addEventListener("click",e=>{const b=e.target.closest("[data-act]");if(!b||!r.contains(b))return;const a=b.dataset.act,id=b.dataset.id,rec=Q.flights.find(x=>x.id===id)||(Q.last&&Q.last.id===id?Q.last:null);
+  if(a==="sub"){Q.sub=b.dataset.v;showSub()}else if(a==="go"){Q.status==="running"?stop():start()}
+  else if(a==="rc"){Q.follow=true;if(Q.fix)Q.map.center(Q.fix.lat,Q.fix.lon);ui()}else if(a==="zi")Q.map.zoomBy(1);else if(a==="zo")Q.map.zoomBy(-1);
+  else if(a==="kfit"){if(Q.kml.polygons.length+Q.kml.lines.length+Q.kml.points.length){Q.follow=false;Q.map.fit(kmlBounds(Q.kml));ui()}}else if(a==="kclr")clearKml();
+  else if(a==="share"&&rec)share(rec);else if(a==="dl"&&rec)saveGpx(rec);else if(a==="dismiss"){Q.last=null;ui()}else if(a==="draftsave")draftSave();else if(a==="draftdel")draftDel();else if(a==="trim"&&rec)openTrim(rec);else if(a==="trimx"){Q.trimId=null;Q.trimSure=false;renderLog()}else if(a==="trimgo"&&rec)trimGo(rec)
+  else if(a==="del"&&rec){if(Q.confirmId===id){clearTimeout(Q.confirmT);Q.confirmId=null;delFlight(rec).then(refreshFlights,e=>note("Silinemedi: "+errMsg(e)))}else{Q.confirmId=id;clearTimeout(Q.confirmT);Q.confirmT=setTimeout(()=>{Q.confirmId=null;renderLog()},4000);renderLog()}}});
+ r.addEventListener("change",e=>{if(e.target.matches(".fl-cs")){const v=e.target.value.trim().toUpperCase().slice(0,12);e.target.value=v;try{localStorage.setItem(csKey(),v)}catch(_){}if(Q.status==="running"){Q.pubT=0;pubPos();pushGpxNotif(false,true)}return}if(e.target.matches(".fl-shr")){Q.share=e.target.checked;try{localStorage.setItem(shKey(),Q.share?"1":"0")}catch(_){}if(Q.share){Q.pubT=0;if(Q.status==="running")pubPos()}else pubClear()}else if(e.target.matches(".fl-kfile"))loadKml(e.target)})}
+function showSub(){if(!Q.root)return;Q.root.querySelector(".fl-p-map").hidden=Q.sub!=="map";Q.root.querySelector(".fl-p-log").hidden=Q.sub!=="log";Q.root.querySelectorAll(".fl-tabs button").forEach(b=>b.classList.toggle("on",b.dataset.v===Q.sub));if(Q.sub==="log")renderLog();else if(Q.map)Q.map.resize()}
+function csFill(r){const el=r.querySelector(".fl-cs");if(!el)return;const cur=callOn();const regs=[...new Set((S.balloons||[]).map(b=>b.r).filter(Boolean))].sort();if(cur&&!regs.includes(cur))regs.push(cur);const sig=regs.join("|")+"#"+cur;if(el.dataset.sig===sig)return;el.dataset.sig=sig;el.innerHTML='<option value="">Seçiniz</option>'+regs.map(x=>`<option value="${esc(x)}"${x===cur?" selected":""}>${esc(x)}</option>`).join("")}
+function ui(){
+ const r=Q.root;if(!r||!r.isConnected)return;
+ const T=(s,v)=>{const el=r.querySelector(s);if(el&&el.textContent!==v)el.textContent=v};
+ csFill(r);
+ const run=Q.status==="running",c=run?(Q.live||Q.cur):Q.cur,f=(v,d)=>v==null||!isFinite(v)?"–":v.toFixed(d||0);
+ T(".fl-timer",fmtDur(elapsed()));const go=r.querySelector(".fl-go");go.textContent=run?"Stop":"Start";go.classList.toggle("stop",run);
+ T(".t-alt",c?f(c.ele):"–");T(".t-gs",c?f(c.gs*3.6,1):"–");T(".t-vs",c&&run?(c.vs>0?"+":"")+f(c.vs,1):"–");T(".t-wd",c&&c.windFrom!=null?Math.round(c.windFrom)+"° / "+f(c.windSpeed*3.6,0):"–");
+ const fx=Q.fix;T(".fl-pos",fx?`${fx.lat.toFixed(5)}, ${fx.lon.toFixed(5)} · ±${Math.round(fx.acc||0)} m · Baro yükseklik: tarayıcıda yok, GPS kullanılıyor · ${BG?"Mod: yerel uygulama (arka plan konum)":"Mod: web sürümü (ekran açık kalmalı)"}`:"Konum bekleniyor…");
+ r.querySelector(".fl-rc").hidden=!(run&&!Q.follow);
+ const k=Q.kml,kn=k.polygons.length+k.lines.length+k.points.length;T(".fl-kinfo",kn?`${Q.kmlName} · ${k.polygons.length} saha, ${k.lines.length} hat, ${k.points.length} nokta`:(isAdmin()?"KML yüklenmedi (KMZ desteklenmez)":"NOTAM KML yüklenmedi (yönetici yükler)"));
+ r.querySelector('[data-act="kfit"]').hidden=!kn;r.querySelector('[data-act="kclr"]').hidden=!kn||!isAdmin();T(".fl-cnt",Q.flights.length?" ("+Q.flights.length+")":"");
+ let h="";if(Q.err)h+=`<div class="fl-al warn">${esc(Q.err)}</div>`;
+ if(Q.fence.level==="inside")h+=`<div class="fl-al bad">⚠ NOTAM sahası içindesin: ${esc(Q.fence.zone.name)}</div>`;else if(Q.fence.level==="near")h+=`<div class="fl-al warn">⚠ ${esc(Q.fence.zone.name)} sınırına ${Q.fence.distance} m kaldı</div>`;
+ if(run&&!BG&&!Q.wake)h+=`<div class="fl-al warn">Ekran uyanık tutulamıyor. Ayarlar > Ekran ve Parlaklık > Otomatik Kilit > Hiçbir Zaman yapın; ekran kilitlenirse kayıt durur.</div>`;
+ if(run&&Q.gapMsg)h+=`<div class="fl-al warn">${esc(Q.gapMsg)}</div>`;
+ if(!run&&!BG&&!Q.last&&!Q.draft)h+=`<div class="fl-al info">Uçuşta bu uygulamayı açık ve ekranı uyanık tut. Arka plana almak veya ekranı kilitlemek konum kaydını durdurur (Android/iOS uygulamasında arka plan GPX aktiftir).</div>`;
+ if(Q.draft&&!run)h+=`<div class="fl-al warn"><span>Yarım kalan uçuş bulundu (${new Date(Q.draft.t0).toLocaleString("tr-TR")}, ${Q.draft.pts.length} nokta). Kaydedilsin mi?</span><span><button data-act="draftsave">Kaydet</button> <button data-act="draftdel">Sil</button></span></div>`;
+ if(Q.note)h+=`<div class="fl-al info">${esc(Q.note)}</div>`;
+ if(Q.last&&!run)h+=`<div class="fl-al ok"><span>Kaydedildi: ${esc(Q.last.name)}</span><span><button data-act="share" data-id="${esc(Q.last.id)}">Paylaş</button> <button data-act="dl" data-id="${esc(Q.last.id)}">İndir</button> <button data-act="dismiss">✕</button></span></div>`;
+ if(h!==Q.alHtml){Q.alHtml=h;r.querySelector(".fl-alerts").innerHTML=h}
+}
+function renderLog(){
+ const r=Q.root;if(!r||!r.isConnected||Q.sub!=="log")return;
+ const el=r.querySelector(".fl-list");let h=Q.persistent?"":`<div class="fl-al warn">Bu pencerede kalıcı depolama kullanılamıyor: kayıtlar yalnızca sayfa açıkken saklanır. GPX dosyalarını hemen paylaşın veya indirin.</div>`;
+ h+=`<p class="mu">Kayıtlar ${RET_DAYS} gün sonra otomatik silinir. Kayıtlar önce cihaza, sonra sunucuya kaydedilir; yalnızca sen görürsün.${Q.syncErr?` Senkron uyarısı: ${esc(Q.syncErr)}`:""}</p>`;
+ if(!Q.flights.length)h+=`<p class="mu">Henüz kayıtlı uçuş yok. Harita sekmesinden Start ile uçuşu başlat.</p>`;
+ for(const f of Q.flights){
+  const left=Math.max(0,Math.ceil((f.createdAt+RET_DAYS*DAY-Date.now())/DAY)),d=new Date(f.startedAt);
+  h+=`<div class="card"><div class="fl-rowh"><b>${esc(f.name)}</b><span><span class="badge ${f.synced?"ok":"wa"}">${f.synced?"Sunucuda":"Cihazda"}</span></span></div>
+<div>${f.pilotName?esc(f.pilotName)+" · ":""}${d.toLocaleDateString("tr-TR")} · ${d.toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"})}</div>
+<div class="mu">Süre ${fmtDur(f.durationSec*1000)} · Maks. yükseklik ${f.maxAlt==null?"–":Math.round(f.maxAlt)+" m"} · Mesafe ${(f.distanceM/1000).toFixed(1)} km · ${left} gün kaldı</div>
+<div class="fl-acts"><button data-act="share" data-id="${esc(f.id)}">Paylaş</button><button class="ghost" data-act="dl" data-id="${esc(f.id)}">GPX indir</button><button class="ghost" data-act="trim" data-id="${esc(f.id)}">✂️ Kırp</button>${canDel(f)?`<button class="ghost fl-del" data-act="del" data-id="${esc(f.id)}">${Q.confirmId===f.id?"Emin misin? Sil":"🗑 Sil"}</button>`:""}</div>${Q.trimId===f.id?`<div style="margin-top:10px;padding:10px;border:1px dashed var(--bd);border-radius:10px"><b>✂️ Uçuşu kırp</b><div class="mu" style="margin:4px 0 8px">Silmek istediğin süreyi dakika olarak yaz (örn. 5 veya 2.5). Geri alınamaz.</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div><label class="mu">Baştan (dk)</label><input type="number" min="0" step="0.5" inputmode="decimal" data-trim="h" value="${esc(Q.trimH)}"></div><div><label class="mu">Sondan (dk)</label><input type="number" min="0" step="0.5" inputmode="decimal" data-trim="t" value="${esc(Q.trimT)}"></div></div><div class="fl-tprev mu" style="margin:8px 0"></div><div class="fl-acts"><button data-act="trimgo" data-id="${esc(f.id)}">${Q.trimSure?"Emin misin? Kırp":"Kırp ve kaydet"}</button><button class="ghost" data-act="trimx">Vazgeç</button></div></div>`:""}</div>`;
+ }
+ el.innerHTML=h;
+}
+
+/* ---------- dış API ---------- */
+function init(co){
+ Q.co=co;dbp=null;mem.flights.clear();mem.meta.clear();Q.persistent=true;
+ loadKmlRemote().catch(()=>{});checkDraft().catch(()=>{});
+ Q.purgeT=setInterval(refreshFlights,6*36e5);
+ Q.visH=()=>{
+  if(document.visibilityState==="hidden"){
+   if(Q.status==="running"){
+    if(Q.pts.length>1)dbPut("meta",{key:"draft",t0:Q.t0,pts:Q.pts});
+    pushGpxNotif(false,true);
+    if(!BG)Q.hidAt=Date.now();
+   }
+   return;
+  }
+  refreshFlights();
+  if(Q.status==="running"){
+   if(!Q.wake)wakeOn();
+   if(Q.map)Q.map.redraw();
+   ui();
+   if(Q.hidAt&&!BG){
+    const g=Date.now()-Q.hidAt;Q.hidAt=0;
+    if(g>5000){Q.pendingGap=true;Q.gapSec+=g/1000;Q.gapMsg="Uçuş sırasında uygulama toplam "+fmtDur(Q.gapSec*1000)+" arka planda kaldı; bu sürelerde konum kaydedilmedi (GPX'te iz kopuk görünür). Ekranı açık tut.";ui()}
+   }
+  }
+ };
+ Q.pageH=()=>{if(Q.status==="running"&&Q.pts.length>1)dbPut("meta",{key:"draft",t0:Q.t0,pts:Q.pts})};
+ Q.onlineH=()=>{if(isOnlineMode())refreshFlights()};
+ document.addEventListener("visibilitychange",Q.visH);
+ window.addEventListener("pagehide",Q.pageH);
+ window.addEventListener("online",Q.onlineH);
+ refreshFlights();
+}
+function mount(host,co){
+ if(!host)return;
+ if(Q.co&&Q.co!==co)reset();
+ if(!Q.co)init(co);
+ if(!Q.root)build();
+ host.appendChild(Q.root);
+ peersStart();
+ if(locOk())startGeo(Q.status==="running");
+ else if(!Q.locAsked){Q.locAsked=true;askLoc().then(ok=>{if(ok)startGeo(false)})}
+ showSub();ui();requestAnimationFrame(()=>{if(Q.map)Q.map.resize()});
+}
+function reset(){
+ peersStop();
+ if(Q.status==="running")pubClear();
+ clearGpxNotif();
+ stopGeo();
+ clearInterval(Q.timer);clearInterval(Q.purgeT);clearTimeout(Q.noteT);clearTimeout(Q.confirmT);
+ if(Q.wake){try{Q.wake.release()}catch(_){}Q.wake=null}
+ if(Q.visH)document.removeEventListener("visibilitychange",Q.visH);
+ if(Q.pageH)window.removeEventListener("pagehide",Q.pageH);
+ if(Q.onlineH)window.removeEventListener("online",Q.onlineH);
+ if(Q.map)Q.map.destroy();
+ if(Q.root)Q.root.remove();
+ dbp=null;Object.assign(Q,fresh());
+}
+function teardown(){if(!Q.co)return Promise.resolve();if(Q.status==="running")return stop().then(reset,reset);reset();return Promise.resolve()}
+function armLogout(){if(Q.logoutArm)return true;Q.logoutArm=true;setTimeout(()=>{Q.logoutArm=false},8000);note("Uçuş kaydı sürüyor. Çıkış yaparsan uçuş durdurulup kaydedilir. Çıkmak için Çıkış'a tekrar bas.",8000);return false}
+return{mount,teardown,running:()=>Q.status==="running",armLogout};
+})();
