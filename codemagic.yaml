@@ -1,0 +1,160 @@
+workflows:
+  ios-unsigned-ipa:
+    name: AviaDoX iOS (.ipa) Derleme
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      node: 20
+    cache:
+      cache_paths:
+        - ~/.npm
+        - ios/App/Pods
+    scripts:
+      - name: Bağımlılıkları kur ve çevrimdışı Supabase paketini hazırla
+        script: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run prepare:web
+          test -s www/vendor/supabase.umd.js
+
+      - name: iOS projesini oluştur, AppDelegate ve Info.plist uygula
+        script: |
+          if [ ! -d "ios" ]; then
+            npx cap add ios
+          fi
+          if [ -f "ios-config/AppDelegate.swift" ]; then
+            cp ios-config/AppDelegate.swift ios/App/App/AppDelegate.swift
+          fi
+          npx cap sync ios
+
+          python3 - <<'PY'
+          import plistlib
+          plist_path = "ios/App/App/Info.plist"
+          with open(plist_path, "rb") as f:
+              data = plistlib.load(f)
+          modes = list(data.get("UIBackgroundModes", []))
+          for m in ("location", "remote-notification"):
+              if m not in modes:
+                  modes.append(m)
+          data["UIBackgroundModes"] = modes
+          data["NSSupportsLiveActivities"] = True
+          data["NSLocationWhenInUseUsageDescription"] = (
+              "AviaDoX, balon uçuşlarınızın GPX rotasını, irtifasını, hızını ve yönünü kaydetmek için konumunuzu kullanır."
+          )
+          data["NSLocationAlwaysAndWhenInUseUsageDescription"] = (
+              "AviaDoX, ekran kilitliyken veya uygulama arka plandayken uçuş GPX konum kaydını kesintisiz sürdürmek ve kilit ekranı bildirimini güncellemek için arka plan konum iznine ihtiyaç duyar."
+          )
+          data["NSLocationAlwaysUsageDescription"] = (
+              "AviaDoX, ekran kilitliyken uçuş GPX kaydını kesintisiz sürdürmek için arka plan konum iznine ihtiyaç duyar."
+          )
+          with open(plist_path, "wb") as f:
+              plistlib.dump(data, f)
+          print("Info.plist guncellendi.")
+          PY
+
+      - name: www/splash.gif dosyasından iOS uygulama ikonunu (1024x1024) üret
+        script: |
+          if [ -f "www/splash.gif" ]; then
+            swift - <<'SWIFT'
+          import Foundation
+          import CoreGraphics
+          import ImageIO
+          import UniformTypeIdentifiers
+
+          let srcUrl = URL(fileURLWithPath: "www/splash.gif")
+          guard let imgSrc = CGImageSourceCreateWithURL(srcUrl as CFURL, nil),
+                let frame = CGImageSourceCreateImageAtIndex(imgSrc, 0, nil) else {
+              fputs("Hata: www/splash.gif okunamadi.\n", stderr)
+              exit(1)
+          }
+
+          let colorSpace = CGColorSpaceCreateDeviceRGB()
+          var cornerPx: [UInt8] = [11, 25, 41, 255]
+          if let cornerCrop = frame.cropping(to: CGRect(x: 0, y: 0, width: 1, height: 1)),
+             let sampleCtx = CGContext(
+              data: &cornerPx,
+              width: 1,
+              height: 1,
+              bitsPerComponent: 8,
+              bytesPerRow: 4,
+              space: colorSpace,
+              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+          ) {
+              sampleCtx.draw(cornerCrop, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+          }
+          let bgR = cornerPx[3] >= 128 ? CGFloat(cornerPx[0]) / 255.0 : 11.0 / 255.0
+          let bgG = cornerPx[3] >= 128 ? CGFloat(cornerPx[1]) / 255.0 : 25.0 / 255.0
+          let bgB = cornerPx[3] >= 128 ? CGFloat(cornerPx[2]) / 255.0 : 41.0 / 255.0
+
+          let size = 1024
+          guard let ctx = CGContext(
+              data: nil,
+              width: size,
+              height: size,
+              bitsPerComponent: 8,
+              bytesPerRow: size * 4,
+              space: colorSpace,
+              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+          ) else { exit(1) }
+
+          ctx.interpolationQuality = .high
+          ctx.setFillColor(red: bgR, green: bgG, blue: bgB, alpha: 1.0)
+          ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+
+          let target = CGFloat(size) * 0.88
+          let scale = min(target / CGFloat(frame.width), target / CGFloat(frame.height))
+          let dw = CGFloat(frame.width) * scale
+          let dh = CGFloat(frame.height) * scale
+          ctx.draw(frame, in: CGRect(
+              x: (CGFloat(size) - dw) / 2.0,
+              y: (CGFloat(size) - dh) / 2.0,
+              width: dw,
+              height: dh
+          ))
+
+          guard let outImg = ctx.makeImage() else { exit(1) }
+          let iconSetDir = URL(fileURLWithPath: "ios/App/App/Assets.xcassets/AppIcon.appiconset")
+          try FileManager.default.createDirectory(at: iconSetDir, withIntermediateDirectories: true)
+          let outPng = iconSetDir.appendingPathComponent("AppIcon-512@2x.png")
+          guard let dest = CGImageDestinationCreateWithURL(outPng as CFURL, UTType.png.identifier as CFString, 1, nil) else { exit(1) }
+          CGImageDestinationAddImage(dest, outImg, nil)
+          CGImageDestinationFinalize(dest)
+
+          let contentsJson = """
+          {
+            "images" : [
+              {
+                "filename" : "AppIcon-512@2x.png",
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024"
+              }
+            ],
+            "info" : {
+              "author" : "Emre",
+              "version" : 1.8
+            }
+          }
+          """
+          try contentsJson.write(to: iconSetDir.appendingPathComponent("Contents.json"), atomically: true, encoding: .utf8)
+          print("iOS 1024x1024 ikonu hazirlandi.")
+          SWIFT
+          fi
+
+      - name: Xcode Archive ve unsigned .ipa paketle
+        script: |
+          mkdir -p build/Payload
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -archivePath build/AviaDoX.xcarchive \
+            archive
+          cp -r build/AviaDoX.xcarchive/Products/Applications/App.app build/Payload/
+          cd build && zip -r AviaDoX-unsigned.ipa Payload
+
+    artifacts:
+      - build/AviaDoX-unsigned.ipa
