@@ -19,7 +19,7 @@ jobs:
           node-version: '20'
 
       - name: Java 17 (Temurin) kur
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -61,7 +61,7 @@ jobs:
             const p = "android/app/src/main/AndroidManifest.xml";
             let xml = fs.readFileSync(p, "utf8");
             if (!xml.includes("xmlns:tools=")) {
-              xml = xml.replace(/<manifest\b/, `<manifest xmlns:tools="http://schemas.android.com/tools"`);
+              xml = xml.replace("<manifest ", `<manifest xmlns:tools="http://schemas.android.com/tools" `);
             }
             const perms = [
               "android.permission.INTERNET",
@@ -79,18 +79,69 @@ jobs:
                 xml = xml.replace("<application", `    <uses-permission android:name="${perm}" />\n    <application`);
               }
             }
-            const svcLine = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:node="merge" tools:replace="android:exported" />`;
-            if (/BackgroundGeolocationService/.test(xml)) {
-              xml = xml.replace(
-                /<service[\s\S]*?com\.equimaps\.capacitor_background_geolocation\.BackgroundGeolocationService[\s\S]*?\/>/,
-                svcLine
-              );
-            } else {
-              xml = xml.replace("</application>", `${svcLine}\n    </application>`);
+            if (!xml.includes("BackgroundGeolocationService")) {
+              const svc = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:node="merge" tools:replace="android:exported" />\n`;
+              xml = xml.replace("</application>", svc + "    </application>");
             }
             fs.writeFileSync(p, xml, "utf8");
             console.log("AndroidManifest.xml ve ic_stat_aviadox.xml hazirlandi.");
           '
+
+      - name: www/splash.gif dosyasından Android uygulama ikonlarını üret
+        run: |
+          if [ -f "www/splash.gif" ]; then
+            python3 -c "import PIL" 2>/dev/null || python3 -m pip install --quiet pillow
+            python3 - <<'PY'
+          import os
+          from PIL import Image, ImageDraw
+
+          im = Image.open("www/splash.gif")
+          im.seek(0)
+          frame = im.convert("RGBA")
+          px = frame.getpixel((0, 0))
+          bg_rgb = px[:3] if px[3] >= 128 else (11, 25, 41)
+          bg_hex = "#%02X%02X%02X" % bg_rgb
+
+          def make_icon(size, scale, opaque=True, circle=False):
+              base = Image.new("RGBA", (size, size), bg_rgb + (255,) if opaque else (0, 0, 0, 0))
+              target = max(1, int(round(size * scale)))
+              ratio = min(target / frame.width, target / frame.height)
+              nw = max(1, int(round(frame.width * ratio)))
+              nh = max(1, int(round(frame.height * ratio)))
+              resized = frame.resize((nw, nh), Image.Resampling.LANCZOS)
+              ox = (size - nw) // 2
+              oy = (size - nh) // 2
+              base.paste(resized, (ox, oy), resized)
+              if circle:
+                  mask = Image.new("L", (size, size), 0)
+                  ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+                  out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                  out.paste(base, (0, 0), mask)
+                  return out
+              return base.convert("RGB") if opaque else base
+
+          res_root = "android/app/src/main/res"
+          densities = [
+              ("mipmap-mdpi", 48, 108),
+              ("mipmap-hdpi", 72, 162),
+              ("mipmap-xhdpi", 96, 216),
+              ("mipmap-xxhdpi", 144, 324),
+              ("mipmap-xxxhdpi", 192, 432),
+          ]
+          for folder, sz, fg_sz in densities:
+              d = os.path.join(res_root, folder)
+              os.makedirs(d, exist_ok=True)
+              make_icon(sz, 0.86, opaque=True, circle=False).save(os.path.join(d, "ic_launcher.png"), "PNG")
+              make_icon(sz, 0.84, opaque=True, circle=True).save(os.path.join(d, "ic_launcher_round.png"), "PNG")
+              make_icon(fg_sz, 0.62, opaque=False, circle=False).save(os.path.join(d, "ic_launcher_foreground.png"), "PNG")
+
+          vals_dir = os.path.join(res_root, "values")
+          os.makedirs(vals_dir, exist_ok=True)
+          with open(os.path.join(vals_dir, "ic_launcher_background.xml"), "w", encoding="utf-8") as f:
+              f.write(f'<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">{bg_hex}</color>\n</resources>\n')
+          print(f"Android uygulama ikonlari www/splash.gif dosyasindan uretildi (arka plan: {bg_hex}).")
+          PY
+          fi
 
       - name: Android Debug APK derle
         working-directory: ./android
@@ -107,16 +158,16 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
   build-ios-ipa:
-    name: iOS-AviaDOX
-    runs-on: macos-latest
+    name: iOS IPA Derle (macOS + Xcode)
+    runs-on: macos-15
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
 
-      - name: Node.js 24 kur
-        uses: actions/setup-node@v5
+      - name: Node.js 20 kur
+        uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '20'
 
       - name: Bağımlılıkları kur ve çevrimdışı Supabase paketini hazırla
         run: |
@@ -158,6 +209,118 @@ jobs:
               plistlib.dump(data, f)
           print("Info.plist guncellendi.")
           PY
+
+      - name: www/splash.gif dosyasından iOS uygulama ikonunu (1024×1024) üret
+        run: |
+          if [ -f "www/splash.gif" ]; then
+            swift - <<'SWIFT'
+          import Foundation
+          import CoreGraphics
+          import ImageIO
+          import UniformTypeIdentifiers
+
+          let srcUrl = URL(fileURLWithPath: "www/splash.gif")
+          guard let imgSrc = CGImageSourceCreateWithURL(srcUrl as CFURL, nil),
+                let frame = CGImageSourceCreateImageAtIndex(imgSrc, 0, nil) else {
+              fputs("Hata: www/splash.gif okunamadi.\n", stderr)
+              exit(1)
+          }
+
+          let colorSpace = CGColorSpaceCreateDeviceRGB()
+          var cornerPx: [UInt8] = [11, 25, 41, 255]
+          if let cornerCrop = frame.cropping(to: CGRect(x: 0, y: 0, width: 1, height: 1)),
+             let sampleCtx = CGContext(
+              data: &cornerPx,
+              width: 1,
+              height: 1,
+              bitsPerComponent: 8,
+              bytesPerRow: 4,
+              space: colorSpace,
+              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+          ) {
+              sampleCtx.draw(cornerCrop, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+          }
+          let bgR = cornerPx[3] >= 128 ? CGFloat(cornerPx[0]) / 255.0 : 11.0 / 255.0
+          let bgG = cornerPx[3] >= 128 ? CGFloat(cornerPx[1]) / 255.0 : 25.0 / 255.0
+          let bgB = cornerPx[3] >= 128 ? CGFloat(cornerPx[2]) / 255.0 : 41.0 / 255.0
+
+          let size = 1024
+          guard let ctx = CGContext(
+              data: nil,
+              width: size,
+              height: size,
+              bitsPerComponent: 8,
+              bytesPerRow: size * 4,
+              space: colorSpace,
+              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+          ) else {
+              fputs("Hata: 1024x1024 ikon baglami olusturulamadi.\n", stderr)
+              exit(1)
+          }
+
+          ctx.interpolationQuality = .high
+          ctx.setFillColor(red: bgR, green: bgG, blue: bgB, alpha: 1.0)
+          ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+
+          let fw = CGFloat(frame.width)
+          let fh = CGFloat(frame.height)
+          let target = CGFloat(size) * 0.88
+          let scale = min(target / fw, target / fh)
+          let dw = fw * scale
+          let dh = fh * scale
+          let rect = CGRect(
+              x: (CGFloat(size) - dw) / 2.0,
+              y: (CGFloat(size) - dh) / 2.0,
+              width: dw,
+              height: dh
+          )
+          ctx.draw(frame, in: rect)
+
+          guard let outImg = ctx.makeImage() else {
+              fputs("Hata: iOS ikon goruntusu uretilemedi.\n", stderr)
+              exit(1)
+          }
+
+          let iconSetDir = URL(fileURLWithPath: "ios/App/App/Assets.xcassets/AppIcon.appiconset")
+          let fm = FileManager.default
+          try fm.createDirectory(at: iconSetDir, withIntermediateDirectories: true)
+          if let existing = try? fm.contentsOfDirectory(at: iconSetDir, includingPropertiesForKeys: nil) {
+              for item in existing where item.pathExtension.lowercased() == "png" {
+                  try? fm.removeItem(at: item)
+              }
+          }
+
+          let outPng = iconSetDir.appendingPathComponent("AppIcon-512@2x.png")
+          guard let dest = CGImageDestinationCreateWithURL(outPng as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+              fputs("Hata: PNG hedefi acilamadi.\n", stderr)
+              exit(1)
+          }
+          CGImageDestinationAddImage(dest, outImg, nil)
+          guard CGImageDestinationFinalize(dest) else {
+              fputs("Hata: PNG kaydedilemedi.\n", stderr)
+              exit(1)
+          }
+
+          let contentsJson = """
+          {
+            "images" : [
+              {
+                "filename" : "AppIcon-512@2x.png",
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024"
+              }
+            ],
+            "info" : {
+              "author" : "xcode",
+              "version" : 1
+            }
+          }
+          """
+          try contentsJson.write(to: iconSetDir.appendingPathComponent("Contents.json"), atomically: true, encoding: .utf8)
+          print("iOS 1024x1024 opak uygulama ikonu www/splash.gif dosyasindan uretildi.")
+          SWIFT
+          fi
 
       - name: Xcode Archive ve unsigned .ipa paketle
         run: |
