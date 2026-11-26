@@ -20,7 +20,7 @@ concurrency:
 jobs:
   build-ios-ipa:
     name: iOS IPA Derle
-    runs-on: macos-latest
+    runs-on: macos-13
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
