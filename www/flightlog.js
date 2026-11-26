@@ -16,16 +16,42 @@ function pointInPolygon(p,pg){return pointInRing(p,pg.outer)&&!pg.holes.some(h=>
 function distToRingEdge(p,ring){const cl=Math.cos(rad(p[0]));const xy=q=>[rad(q[1]-p[1])*R*cl,rad(q[0]-p[0])*R];let m=Infinity;for(let i=0;i<ring.length;i++){const a=xy(ring[i]),b=xy(ring[(i+1)%ring.length]);m=Math.min(m,distSeg(0,0,a[0],a[1],b[0],b[1]))}return m}
 /* KRİTİK: KML "boylam,enlem,rakım" -> harita "enlem,boylam". */
 function parseCoords(s){return String(s).trim().split(/\s+/).map(t=>t.split(",").map(Number)).filter(a=>a.length>=2&&isFinite(a[0])&&isFinite(a[1])&&Math.abs(a[1])<=90&&Math.abs(a[0])<=180).map(a=>[a[1],a[0]])}
-/* GPS okumasını telemetri noktasına çevirir. CoreLocation -1 değerleri elenir. */
-function makePoint(pos,prev,baro){const c=pos.coords,ts=pos.timestamp,here=[c.latitude,c.longitude];const dt=prev?(ts-prev.ts)/1000:0;const d=prev&&dt>0?haversine([prev.lat,prev.lon],here):0;
+const normDeg=a=>((a%360)+360)%360;
+const roundDeg=a=>((Math.round(a)%360)+360)%360;
+const smoothAngle=(prev,next,alpha)=>{const n=normDeg(next);if(prev==null||!isFinite(prev))return n;const diff=((n-prev+540)%360)-180;return normDeg(prev+diff*alpha)};
+const DIRS_TR=["K","KD","D","GD","G","GB","B","KB"];
+const fmtCourse=a=>{if(a==null||!isFinite(a))return"–";const d=roundDeg(a);return String(d).padStart(3,"0")+"° "+DIRS_TR[Math.floor((d+22.5)/45)%8]};
+/* GPS okumasını telemetri noktasına çevirir. CoreLocation -1 ve Android durgun 0° gürültüsü elenir; gerçek yer değiştirme ile dairesel yumuşatmalı rota yönü (000°-359°) hesaplanır. */
+function makePoint(pos,prev,baro,hdgState){const c=pos.coords,ts=pos.timestamp,here=[c.latitude,c.longitude];const dt=prev?(ts-prev.ts)/1000:0;const d=prev&&dt>0?haversine([prev.lat,prev.lon],here):0;
  const validSpd=c.speed!=null&&isFinite(c.speed)&&c.speed>=0;
  const gs=validSpd?c.speed:(dt>0?d/dt:0);
- const validHdg=c.heading!=null&&isFinite(c.heading)&&c.heading>=0;
- let course=validHdg?(c.heading%360+360)%360:(prev&&prev.course!=null?prev.course:null);
- if(!validHdg&&prev&&d>0.5)course=bearing([prev.lat,prev.lon],here);
+ const acc=c.accuracy!=null&&isFinite(c.accuracy)?c.accuracy:10;
+ const minStep=Math.max(6,Math.min(20,acc*0.7));
+ const prevCourse=hdgState&&hdgState.course!=null&&isFinite(hdgState.course)?hdgState.course:(prev&&prev.course!=null&&isFinite(prev.course)?prev.course:null);
+ let dRef=0,geoBrg=null;
+ if(hdgState){
+  if(!hdgState.ref){hdgState.ref=[c.latitude,c.longitude,ts]}
+  else{
+   dRef=haversine(hdgState.ref,here);
+   if(dRef>=minStep){geoBrg=bearing(hdgState.ref,here);hdgState.ref=[c.latitude,c.longitude,ts]}
+  }
+ }else if(prev&&d>=minStep){dRef=d;geoBrg=bearing([prev.lat,prev.lon],here)}
+ const rawHdg=c.heading!=null&&isFinite(c.heading)&&c.heading>=0?normDeg(c.heading):null;
+ // Android durgun/düşük hızda hasBearing()=false için 0° gönderir; sadece gerçek hareket varken OS yönüne güven.
+ const validOsHdg=rawHdg!=null&&gs>=1.2&&!(rawHdg===0&&dRef<minStep&&gs<2.0);
+ let course=prevCourse;
+ if(geoBrg!=null&&validOsHdg){
+  const blended=smoothAngle(geoBrg,rawHdg,0.35);
+  course=smoothAngle(prevCourse,blended,0.5);
+ }else if(geoBrg!=null){
+  course=smoothAngle(prevCourse,geoBrg,0.45);
+ }else if(validOsHdg&&gs>=1.5){
+  course=smoothAngle(prevCourse,rawHdg,0.35);
+ }
+ if(hdgState&&course!=null)hdgState.course=course;
  const gpsAlt=c.altitude!=null&&isFinite(c.altitude)?c.altitude:null,baroAlt=baro==null?null:baro,ele=baroAlt!=null?baroAlt:gpsAlt;
  let vs=0;if(prev&&dt>0&&ele!=null&&prev.ele!=null)vs=prev.vs*(1-EMA)+((ele-prev.ele)/dt)*EMA;
- return{ts,t:new Date(ts).toISOString(),lat:c.latitude,lon:c.longitude,gpsAlt,baroAlt,ele,acc:c.accuracy,gs,course,vs,windSpeed:gs,windFrom:course==null?null:(course+180)%360}}
+ return{ts,t:new Date(ts).toISOString(),lat:c.latitude,lon:c.longitude,gpsAlt,baroAlt,ele,acc:c.accuracy,gs,course,vs,windSpeed:gs,windFrom:course==null?null:normDeg(course+180)}}
 function flightFileName(d){d=d||new Date();const p=n=>String(n).padStart(2,"0");return`Flight_${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}.gpx`}
 function flightStats(pts){let dist=0,maxAlt=-Infinity,maxClimb=0,maxSink=0;pts.forEach((p,i)=>{if(i&&!p.gapBefore)dist+=haversine([pts[i-1].lat,pts[i-1].lon],[p.lat,p.lon]);if(p.ele!=null&&isFinite(p.ele))maxAlt=Math.max(maxAlt,p.ele);if(isFinite(p.vs)){maxClimb=Math.max(maxClimb,p.vs);maxSink=Math.min(maxSink,p.vs)}});
  return{distanceM:dist,maxAlt:isFinite(maxAlt)?maxAlt:null,maxClimb,maxSink,durationSec:pts.length>1?(pts[pts.length-1].ts-pts[0].ts)/1000:0}}
@@ -68,7 +94,7 @@ const isExpired=(f,now)=>f.createdAt<now-RET_DAYS*DAY;
 //#PURE-END
 
 /* ---------- durum ---------- */
-function fresh(){return{co:null,root:null,map:null,sub:"map",status:"idle",fix:null,raw:null,cur:null,live:null,prevP:null,pts:[],t0:0,t1:0,now:0,follow:false,centered:false,err:"",
+function fresh(){return{co:null,root:null,map:null,sub:"map",status:"idle",fix:null,raw:null,cur:null,live:null,prevP:null,hdgState:{ref:null,course:null},pts:[],t0:0,t1:0,now:0,follow:false,centered:false,err:"",
  kml:{polygons:[],lines:[],points:[]},kmlName:"",flights:[],last:null,fence:{level:"clear"},fenceKey:"clear",watch:null,timer:null,purgeT:null,wake:null,
  note:"",noteT:null,persistent:true,visH:null,pageH:null,onlineH:null,alHtml:"",confirmId:null,confirmT:null,logoutArm:false,lastPurge:0,syncing:new Set(),syncErr:"",
  pendingGap:false,gapMsg:"",hidAt:0,gapSec:0,draft:null,draftT:0,pubT:0,notifT:0,trimId:null,trimH:"",trimT:"",trimPts:null,trimSure:false,locAsked:false,peers:{},peerCh:null,peerT:null,share:true}}
@@ -361,13 +387,17 @@ const due=(lp,t)=>!lp||t-lp.ts>=PT_MS-500;
 const BG=(()=>{try{const C=window.Capacitor;if(C&&C.isNativePlatform&&C.isNativePlatform())return(C.Plugins&&C.Plugins.BackgroundGeolocation)||C.registerPlugin("BackgroundGeolocation")}catch(_){}return null})();
 const isIOS=()=>/iPhone|iPad|iPod/i.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
 function toPos(l){
+ const spd=l.speed!=null&&isFinite(l.speed)&&l.speed>=0?l.speed:null;
+ const rawBrg=l.bearing!=null&&isFinite(l.bearing)&&l.bearing>=0?l.bearing:null;
+ // Android konum servisi yön yokken bearing=0 döndürür; düşük hızda sahte 0° elenir.
+ const heading=rawBrg!=null&&!(rawBrg===0&&(spd==null||spd<0.8))?rawBrg:null;
  return{
   coords:{
    latitude:l.latitude,
    longitude:l.longitude,
    altitude:l.altitude!=null&&isFinite(l.altitude)?l.altitude:null,
-   speed:l.speed!=null&&isFinite(l.speed)&&l.speed>=0?l.speed:null,
-   heading:l.bearing!=null&&isFinite(l.bearing)&&l.bearing>=0?l.bearing:null,
+   speed:spd,
+   heading,
    accuracy:l.accuracy!=null&&isFinite(l.accuracy)?l.accuracy:null,
   },
   timestamp:l.time||Date.now(),
@@ -382,7 +412,7 @@ function startGeo(bg){
    const opts={requestPermissions:true,stale:false,distanceFilter:0};
    if(bg){
     opts.backgroundTitle="AviaDoX · GPX Kaydı Aktif";
-    opts.backgroundMessage="Uçuş kaydı sürüyor. Konum arka planda kaydediliyor.";
+    opts.backgroundMessage="GPX uçuş kaydı aktif";
    }
    try{
     Q.watch=await BG.addWatcher(opts,(loc,err)=>{
@@ -427,7 +457,7 @@ function onPos(pos){
   // Geri giden zaman damgası veya 150 m üzeri hatalı GPS sıçraması koruması
   const badAcc=c.accuracy!=null&&isFinite(c.accuracy)&&c.accuracy>150&&Q.pts.length>0;
   if((!lp||pos.timestamp>lp.ts)&&!badAcc){
-   const p=makePoint(pos,lp);
+   const p=makePoint(pos,lp,null,Q.hdgState);
    Q.live=p;
    if(due(lp,pos.timestamp)){
     if(Q.pendingGap){p.gapBefore=true;Q.pendingGap=false}
@@ -437,7 +467,7 @@ function onPos(pos){
   }
  }
  Q.fix={lat:c.latitude,lon:c.longitude,acc:c.accuracy,heading:c.heading,speed:c.speed,alt:c.altitude,ts:pos.timestamp};Q.err="";
- if(Q.status!=="running")Q.cur=Q.prevP=makePoint(pos,Q.prevP);
+ if(Q.status!=="running")Q.cur=Q.prevP=makePoint(pos,Q.prevP,null,Q.hdgState);
  checkFence();
  if(Q.map){
   if(!Q.centered){Q.centered=true;Q.map.setView(Q.fix.lat,Q.fix.lon,14)}
@@ -491,10 +521,10 @@ function start(){
  if(Q.status==="running")return;
  if(!locOk()){askLoc().then(ok=>{if(ok){startGeo(false);note("Konum başlatılıyor. Konum gelince Start'a tekrar bas.")}});return}
  if(!Q.fix){note("Henüz konum alınamadı. Konum iznini verin ve GPS sinyalini bekleyin.");return}
- Q.pts=[];Q.cur=null;Q.live=null;Q.prevP=null;Q.last=null;Q.pendingGap=false;Q.gapMsg="";Q.gapSec=0;Q.hidAt=0;Q.draft=null;Q.draftT=0;Q.notifT=0;
+ Q.pts=[];Q.cur=null;Q.live=null;Q.prevP=null;Q.hdgState={ref:null,course:null};Q.last=null;Q.pendingGap=false;Q.gapMsg="";Q.gapSec=0;Q.hidAt=0;Q.draft=null;Q.draftT=0;Q.notifT=0;
  Q.t0=Date.now();Q.now=Q.t0;Q.status="running";Q.follow=true;Q.fenceKey="";
  // Kalkış anı ilk noktasını garanti altına al
- if(Q.raw){const p0=makePoint({coords:Q.raw.coords,timestamp:Q.t0},null);Q.pts.push(p0);Q.cur=p0;Q.live=p0}
+ if(Q.raw){const p0=makePoint({coords:Q.raw.coords,timestamp:Q.t0},null,null,Q.hdgState);Q.pts.push(p0);Q.cur=p0;Q.live=p0}
  checkFence();wakeOn();restartGeo(true);
  Q.share=shareOn();Q.pubT=0;
  pushGpxNotif(true,true);
@@ -506,7 +536,7 @@ function tick(){
  const now=Date.now(),raw=Q.raw;Q.now=now;
  const lastP=Q.pts.length?Q.pts[Q.pts.length-1]:null;
  if(!BG&&raw&&now-raw.timestamp<=FIX_MAX_AGE){
-  const p=makePoint({coords:raw.coords,timestamp:now},lastP);Q.live=p;
+  const p=makePoint({coords:raw.coords,timestamp:now},lastP,null,Q.hdgState);Q.live=p;
   if(due(lastP,now)){if(Q.pendingGap){p.gapBefore=true;Q.pendingGap=false}Q.pts.push(p);Q.cur=p}
  }
  if(Q.pts.length>1&&now-Q.draftT>=15000){Q.draftT=now;dbPut("meta",{key:"draft",t0:Q.t0,pts:Q.pts})}
@@ -632,7 +662,8 @@ function createMap(host,cb){
   const f=Qs.fix;if(f){const q=P([f.lat,f.lon]),mpp=156543.03392*Math.cos(rad(f.lat))/2**V.z,ar=(f.acc||0)/mpp;
    if(ar>14){c.beginPath();c.arc(q[0],q[1],ar,0,6.2832);c.fillStyle="rgba(255,176,0,.12)";c.fill()}
    c.beginPath();c.arc(q[0],q[1],14,0,6.2832);c.fillStyle="rgba(255,176,0,.35)";c.fill();
-   if(f.heading!=null&&isFinite(f.heading)&&f.heading>=0&&(f.speed||0)>0.5){c.save();c.translate(q[0],q[1]);c.rotate(rad(f.heading));c.beginPath();c.moveTo(0,-20);c.lineTo(6,-10);c.lineTo(-6,-10);c.closePath();c.fillStyle="#ffb000";c.fill();c.restore()}
+   const myCourse=(Qs.live&&Qs.live.course!=null&&isFinite(Qs.live.course))?Qs.live.course:(Qs.cur&&Qs.cur.course!=null&&isFinite(Qs.cur.course)?Qs.cur.course:null);
+   if(myCourse!=null){c.save();c.translate(q[0],q[1]);c.rotate(rad(myCourse));c.beginPath();c.moveTo(0,-20);c.lineTo(6,-10);c.lineTo(-6,-10);c.closePath();c.fillStyle="#ffb000";c.fill();c.restore()}
    c.beginPath();c.arc(q[0],q[1],8,0,6.2832);c.fillStyle="#ffb000";c.fill();c.strokeStyle="#fff";c.lineWidth=3;c.stroke()}
   c.font="10px system-ui,sans-serif";c.textAlign="right";c.fillStyle="rgba(255,255,255,.75)";c.fillText("Esri, Maxar, Earthstar Geographics",V.w-6,V.h-5);c.textAlign="left";
   if(!navigator.onLine||(tErr>=4&&tOk===0)){c.fillStyle="rgba(11,17,24,.75)";c.fillRect(0,V.h-44,V.w,26);c.fillStyle="#ffb000";c.font="12px system-ui,sans-serif";c.textAlign="center";c.fillText(typeof I18N!=="undefined"?I18N.tx("Çevrimdışı harita: GPS izi kaydedilmeye devam eder"):"Çevrimdışı harita: GPS izi kaydedilmeye devam eder",V.w/2,V.h-27);c.textAlign="left"}
@@ -668,7 +699,7 @@ function build(){const r=document.createElement("div");r.className="fl";
  r.innerHTML=`<div class="fl-tabs"><button data-act="sub" data-v="map" class="on">🗺️ Harita</button><button data-act="sub" data-v="log">📁 Kayıtlar<span class="fl-cnt"></span></button></div>
 <div class="fl-pane fl-p-map">
  <div class="fl-bar"><div class="fl-timer">00:00:00</div><button class="fl-go" data-act="go">Start</button></div>
- <div class="fl-telem"><div><b class="t-alt">–</b><span>Yükseklik m</span></div><div><b class="t-gs">–</b><span>Yer hızı km/sa</span></div><div><b class="t-vs">–</b><span>Dikey hız m/s</span></div><div><b class="t-wd">–</b><span>Rüzgar yön° / km/sa</span></div></div>
+ <div class="fl-telem"><div><b class="t-alt">–</b><span>Yükseklik m</span></div><div><b class="t-gs">–</b><span>Yer hızı km/sa</span></div><div><b class="t-vs">–</b><span>Dikey hız m/s</span></div><div><b class="t-wd">–</b><span>Gidiş yönü°</span></div></div>
  <div class="fl-alerts"></div>
  <div class="fl-mapwrap"><button class="fl-rc" data-act="rc" hidden>Merkeze al</button><div class="fl-zoom"><button data-act="zi" aria-label="Yakınlaştır">+</button><button data-act="zo" aria-label="Uzaklaştır">−</button></div></div>
  <div class="fl-pos mu"></div>
@@ -693,7 +724,7 @@ function ui(){
  csFill(r);
  const run=Q.status==="running",c=run?(Q.live||Q.cur):Q.cur,f=(v,d)=>v==null||!isFinite(v)?"–":v.toFixed(d||0);
  T(".fl-timer",fmtDur(elapsed()));const go=r.querySelector(".fl-go");go.textContent=run?"Stop":"Start";go.classList.toggle("stop",run);
- T(".t-alt",c?f(c.ele):"–");T(".t-gs",c?f(c.gs*3.6,1):"–");T(".t-vs",c&&run?(c.vs>0?"+":"")+f(c.vs,1):"–");T(".t-wd",c&&c.windFrom!=null?Math.round(c.windFrom)+"° / "+f(c.windSpeed*3.6,0):"–");
+ T(".t-alt",c?f(c.ele):"–");T(".t-gs",c?f(c.gs*3.6,1):"–");T(".t-vs",c&&run?(c.vs>0?"+":"")+f(c.vs,1):"–");T(".t-wd",c&&c.course!=null?fmtCourse(c.course):"–");
  const fx=Q.fix;T(".fl-pos",fx?`${fx.lat.toFixed(5)}, ${fx.lon.toFixed(5)} · ±${Math.round(fx.acc||0)} m · Baro yükseklik: tarayıcıda yok, GPS kullanılıyor · ${BG?"Mod: yerel uygulama (arka plan konum)":"Mod: web sürümü (ekran açık kalmalı)"}`:"Konum bekleniyor…");
  r.querySelector(".fl-rc").hidden=!(run&&!Q.follow);
  const k=Q.kml,kn=k.polygons.length+k.lines.length+k.points.length;T(".fl-kinfo",kn?`${Q.kmlName} · ${k.polygons.length} saha, ${k.lines.length} hat, ${k.points.length} nokta`:(isAdmin()?"KML yüklenmedi (KMZ desteklenmez)":"NOTAM KML yüklenmedi (yönetici yükler)"));

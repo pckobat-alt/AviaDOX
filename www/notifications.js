@@ -19,7 +19,7 @@ const AVNOTIF = (() => {
   const CHANNELS = [
     {
       id: "aviadox_gpx",
-      name: "GPX Uçuş Kaydı (Arka Plan)",
+      name: "GPX Uçuş Kaydı",
       description: "Kilit ekranında aktif GPX uçuş kaydı durum bildirimi",
       importance: 2, // LOW: sessiz kalıcı durum bildirimi
       visibility: 1, // PUBLIC: kilit ekranında görünsün
@@ -235,12 +235,12 @@ const AVNOTIF = (() => {
     const gsStr = info.gs != null && isFinite(info.gs) ? `${(info.gs * 3.6).toFixed(0)} km/sa` : "0 km/sa";
     const hasCourse = info.course != null && isFinite(info.course) && info.course >= 0;
     const hdgDeg = hasCourse ? ((Math.round(info.course) % 360) + 360) % 360 : null;
-    const hdgStr = hdgDeg != null ? `Yön ${String(hdgDeg).padStart(3, "0")}°` : "Yön –°";
+    const hdgStr = hdgDeg != null ? `${String(hdgDeg).padStart(3, "0")}°` : "–°";
     const call = info.callsign ? `${info.callsign} · ` : "";
     const simTag = info.sim ? " [TEST]" : "";
 
     const title = `🔴 AviaDoX · GPX Kaydı Aktif${simTag}`;
-    const body = `${call}Arka planda konum kaydı sürüyor · Süre ${dur} · ${altStr} · ${gsStr} · ${hdgStr}`;
+    const body = `${call}${dur} · ${altStr} · ${gsStr} · ${hdgStr}`;
 
     // A) iOS 16.2+ Live Activity (Xcode'da FlightLiveActivity.swift eklendiyse)
     const la = LA();
