@@ -158,8 +158,8 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
   build-ios-ipa:
-    name: iOS IPA Derle (macOS + Xcode)
-    runs-on: macos-15
+    name: iOS IPA Derle
+    runs-on: macos-latest
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
@@ -312,8 +312,8 @@ jobs:
               }
             ],
             "info" : {
-              "author" : "xcode",
-              "version" : 1
+              "author" : "Emre",
+              "version" : 1.8
             }
           }
           """
