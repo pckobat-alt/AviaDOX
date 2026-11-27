@@ -1,11 +1,12 @@
 // Slot Merkezi sekmesi + Ayarlar'dan yönetilebilen Kapadokya gün doğumu bazlı otomatik kontrol + gerçek yerel/push bildirim + METAR/TAF kartı.
 const SLOT = (() => {
-  const CACHE_KEY = "aviadox-slot-cache-v1";
+  const CACHE_KEY = "aviadox-slot-cache-v2";
+  const LAST_SIG_KEY = "aviadox-slot-last-sig-v2";
   const CFG_KEY = "aviadox-slot-cfg-v1";
   const NATIVE_NOTIF_KEY = "aviadox-native-slot-push";
-  const CAP_LAT = 38.6431; // Kapadokya (Göreme/Nevşehir)
-  const CAP_LON = 34.8289;
-  const TR_TZ_MIN = 180;   // Türkiye sabit UTC+3
+  const CAP_LAT = 38.7235072; // Resmî Slot Merkezi Kapadokya koordinatı
+  const CAP_LON = 34.7194168;
+  const TR_TZ_MIN = 180;      // Türkiye sabit UTC+3
 
   const DEFAULT_CFG = {
     enabled: true,
@@ -15,10 +16,24 @@ const SLOT = (() => {
   };
 
   let cfg = loadCfg();
-  let data = null, ts = "", host = null, started = false, ch = null, banner = "", pushOn = null, busy = "", pollT = null, refreshing = false;
+  let data = null, ts = "", host = null, started = false, ch = null, banner = "", fetchErr = "", pushOn = null, busy = "", pollT = null, staleTickT = null, refreshing = false;
   const FL = { red: ["🔴", "UÇULMAZ", "var(--er)"], yellow: ["🟡", "UÇULMAZ (sarı bayrak)", "var(--wa)"], green: ["🟢", "UÇULABİLİR", "var(--ok,#2e9e5b)"] };
-  const sig = d => JSON.stringify([(d.items || []).map(i => i.flag), d.updated, d.valid]);
+  const sig = d => JSON.stringify((d && Array.isArray(d.items) ? d.items : []).map(i => `${i.name}:${i.flag}:${i.valid || ""}`));
   const tm = s => s ? new Date(s).toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }) : "";
+  function elapsedText(isoTs) {
+    if (!isoTs) return "";
+    const ms = Date.now() - new Date(isoTs).getTime();
+    if (!Number.isFinite(ms) || ms < 0) return "Veriler az önce güncellendi";
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return "Veriler az önce güncellendi";
+    if (mins < 60) return `Veriler ${mins}dk önce güncellendi`;
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    if (hrs < 24) return rem ? `Veriler ${hrs}sa ${rem}dk önce güncellendi` : `Veriler ${hrs}sa önce güncellendi`;
+    return `Veriler ${Math.floor(hrs / 24)} gün önce güncellendi`;
+  }
+  function loadLastSig() { try { return localStorage.getItem(LAST_SIG_KEY) || ""; } catch (_) { return ""; } }
+  function saveLastSig(v) { try { if (v) localStorage.setItem(LAST_SIG_KEY, v); } catch (_) {} }
   const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   const canOnline = () => typeof sb !== "undefined" && !!sb && typeof S !== "undefined" && !S.offline && !S.offlineGuest && navigator.onLine;
 
@@ -187,7 +202,7 @@ const SLOT = (() => {
     }, w.waitMs);
   }
 
-  const SLOT_SITE_URL = "https://shmkapadokya.kapadokya.edu.tr";
+  const SLOT_SITE_URL = "https://shmkapadokya.kapadokya.edu.tr/";
   const METAR_RAW_URL = "https://aviationweather.gov/api/data/metar?ids=LTAZ&format=raw";
   const TAF_RAW_URL = "https://aviationweather.gov/api/data/taf?ids=LTAZ&format=raw";
 
@@ -201,109 +216,227 @@ const SLOT = (() => {
     return null;
   }
 
-  async function nativeGetText(url, timeoutMs) {
+  async function nativeGetText(url, timeoutMs, bustCache) {
     const http = getCapHttp();
     if (!http || typeof http.get !== "function") return null;
+    const reqUrl = bustCache ? `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}` : url;
     const res = await http.get({
-      url,
+      url: reqUrl,
       responseType: "text",
       connectTimeout: timeoutMs || 12000,
       readTimeout: timeoutMs || 15000,
       headers: {
         Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        Pragma: "no-cache",
       },
     });
     if (!res || (res.status && (res.status < 200 || res.status >= 400))) return null;
     return typeof res.data === "string" ? res.data : (res.data != null ? String(res.data) : null);
   }
 
-  function detectFlag(raw) {
-    const s = String(raw || "").toLocaleLowerCase("tr");
-    if (/yeşil|yesil|\bgreen\b|uçulabilir|uculabilir|flyable|bg-green|bg-success|text-success|#008000|#2e9e5b|#198754/.test(s)) return "green";
-    if (/sarı|sari|\byellow\b|\bamber\b|bg-yellow|bg-warning|text-warning|#ffc107|#f08c00/.test(s)) return "yellow";
-    if (/kırmızı|kirmizi|\bred\b|uçulmaz|uculmaz|bg-red|bg-danger|text-danger|#dc3545|#e03131/.test(s)) return "red";
+  function flagFromImg(src) {
+    const s = String(src || "").toLowerCase();
+    if (!s) return null;
+    if (/red|kirmizi/.test(s)) return "red";
+    if (/yellow|sari|orange|amber/.test(s)) return "yellow";
+    if (/green|yesil/.test(s)) return "green";
     return null;
   }
 
-  function parseSlotHtml(html) {
+  function flagFromTitle(title) {
+    const s = String(title || "").toLocaleLowerCase("tr");
+    if (!s) return null;
+    // Havacılık güvenliği (fail-safe): olumsuz karar her zaman olumludan önce değerlendirilir
+    if (/uçul(?:a)?maz|ucul(?:a)?maz|iptal|kırmızı|kirmizi/.test(s)) return "red";
+    if (/sarı|sari|bekle|kısıtlı|kisitli/.test(s)) return "yellow";
+    if (/uçulabilir|uculabilir|yeşil|yesil/.test(s)) return "green";
+    return null;
+  }
+
+  function reconcileFlag(imgFlag, titleFlag) {
+    if (imgFlag && titleFlag) {
+      if (imgFlag === titleFlag) return imgFlag;
+      // Bayrak görseli ile başlık çelişirse asla yeşil (Uçulabilir) üretme
+      if (imgFlag === "red" || titleFlag === "red") return "red";
+      return "yellow";
+    }
+    return imgFlag || titleFlag || null;
+  }
+
+  function formatSectorName(raw) {
+    const cleaned = String(raw || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\s+(?:U[CÇ]UL(?:A)?MAZ|U[CÇ]ULAB[İI]L[İI]R|KIRMIZI(?:\s+BAYRAK)?|SARI(?:\s+BAYRAK)?|YE[SŞ][İI]L(?:\s+BAYRAK)?|[İI]PTAL)\b.*$/i, "")
+      .trim();
+    if (!cleaned) return "";
+    const m = /^SEKT[ÖO]R\s+([A-ZÇĞİÖŞÜ0-9]+)$/i.exec(cleaned);
+    if (m) return "Sektör " + m[1].toLocaleUpperCase("tr");
+    return cleaned;
+  }
+
+  function isHiddenEl(el) {
+    if (!el) return true;
+    if (el.hasAttribute && el.hasAttribute("hidden")) return true;
+    const cls = (el.getAttribute && el.getAttribute("class")) || "";
+    if (/\bd-none\b|\bhidden\b/i.test(cls)) return true;
+    const st = (el.getAttribute && el.getAttribute("style")) || "";
+    if (/display\s*:\s*none/i.test(st) || /visibility\s*:\s*hidden/i.test(st)) return true;
+    return false;
+  }
+
+  function stripHtmlText(s) {
+    return String(s || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function parseSectorBlocksRegex(html) {
     const items = [];
-    const seen = new Set();
-    const knownRegions = ["Göreme", "Çat", "Soğanlı", "Ihlara", "Avanos", "Ürgüp", "Nevşehir", "Kapadokya"];
+    const parts = String(html || "").split(/<div[^>]*class="[^"]*\bsector-div\b[^"]*"[^>]*>/i).slice(1);
+    for (const rawPart of parts) {
+      const block = rawPart.split(/<div[^>]*id="Sektorler"/i)[0];
+      const h3m = block.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i);
+      const titleRaw = h3m ? stripHtmlText(h3m[1]) : "";
+      const imgm = block.match(/<img[^>]*src=["']([^"']*flags\/[^"']+)["']/i);
+      const fl = reconcileFlag(flagFromImg(imgm ? imgm[1] : ""), flagFromTitle(titleRaw));
+      if (!fl) continue;
+      const name = formatSectorName(titleRaw) || `Sektör ${items.length + 1}`;
+      let desc = "";
+      const pMatches = block.matchAll(/<p([^>]*)class="[^"]*\bsector-text\b[^"]*"([^>]*)>([\s\S]*?)<\/p>/gi);
+      for (const pm of pMatches) {
+        const attrs = (pm[1] || "") + " " + (pm[2] || "");
+        if (/display\s*:\s*none/i.test(attrs) || /\bhidden\b/i.test(attrs)) continue;
+        const txt = stripHtmlText(pm[3]);
+        if (txt) { desc = txt; break; }
+      }
+      const h4s = [...block.matchAll(/<h4[^>]*>([\s\S]*?)<\/h4>/gi)].map(m => stripHtmlText(m[1]));
+      let updated = "", valid = "";
+      for (let i = 0; i < h4s.length - 1; i++) {
+        const k = h4s[i].toLocaleLowerCase("tr");
+        if (k.includes("güncelleme") && !updated) updated = h4s[i + 1];
+        else if (k.includes("geçerli") && !valid) valid = h4s[i + 1];
+      }
+      items.push({ name, flag: fl, label: (FL[fl] && FL[fl][1]) || "", desc, updated, valid });
+    }
+    return items;
+  }
+
+  function parseSlotHtml(html) {
+    if (!html || typeof html !== "string") return null;
+    const items = [];
+    let metar = "";
+    let taf = "";
     let fullText = "";
 
-    try {
-      const doc = new DOMParser().parseFromString(html, "text/html");
-      fullText = (doc.body && doc.body.textContent ? doc.body.textContent : "").replace(/\s+/g, " ").trim();
-      const candidates = Array.from(doc.querySelectorAll("tr, li, article, section, .card, div"))
-        .filter(el => {
-          const t = (el.textContent || "").trim();
-          return t.length >= 3 && t.length <= 450;
-        })
-        .sort((a, b) => (a.textContent || "").length - (b.textContent || "").length);
+    if (typeof DOMParser !== "undefined") {
+      try {
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        fullText = (doc.body && doc.body.textContent ? doc.body.textContent : "").replace(/\s+/g, " ").trim();
 
-      for (const el of candidates) {
-        const elText = (el.textContent || "").replace(/\s+/g, " ").toLocaleLowerCase("tr");
-        for (const reg of knownRegions) {
-          if (seen.has(reg)) continue;
-          if (elText.includes(reg.toLocaleLowerCase("tr"))) {
-            const fl = detectFlag(el.outerHTML);
-            if (fl) {
-              seen.add(reg);
-              items.push({ name: reg, flag: fl, label: (FL[fl] && FL[fl][1]) || "" });
-            }
+        const sectorEls = Array.from(doc.querySelectorAll(".sector-div"));
+        for (const sec of sectorEls) {
+          const h3 = sec.querySelector("h3");
+          const titleRaw = h3 ? (h3.textContent || "").replace(/\s+/g, " ").trim() : "";
+          const flagImg = sec.querySelector('img[src*="flags/"]') || sec.querySelector(".icon img");
+          const imgSrc = flagImg ? (flagImg.getAttribute("src") || "") : "";
+
+          const fl = reconcileFlag(flagFromImg(imgSrc), flagFromTitle(titleRaw));
+          if (!fl) continue;
+
+          const name = formatSectorName(titleRaw) || `Sektör ${items.length + 1}`;
+
+          let desc = "";
+          const pEls = Array.from(sec.querySelectorAll("p.sector-text, p"));
+          for (const p of pEls) {
+            if (isHiddenEl(p)) continue;
+            const t = (p.textContent || "").replace(/\s+/g, " ").trim();
+            if (t) { desc = t; break; }
           }
+
+          let updated = "", valid = "";
+          const h4s = Array.from(sec.querySelectorAll(".sector-bottom-list h4, h4"))
+            .map(h => (h.textContent || "").replace(/\s+/g, " ").trim());
+          for (let i = 0; i < h4s.length - 1; i++) {
+            const k = h4s[i].toLocaleLowerCase("tr");
+            if (k.includes("güncelleme") && !updated) updated = h4s[i + 1];
+            else if (k.includes("geçerli") && !valid) valid = h4s[i + 1];
+          }
+
+          items.push({ name, flag: fl, label: (FL[fl] && FL[fl][1]) || "", desc, updated, valid });
         }
-      }
-    } catch (_) {
-      fullText = String(html || "")
-        .replace(/<script[\s\S]*?<\/script>/gi, " ")
-        .replace(/<style[\s\S]*?<\/style>/gi, " ")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+
+        // Resmî sayfadaki HEZARFEN Rasat METAR / TAF blokları (başlık sayfada "TAFF" olarak da geçebiliyor)
+        const blocks = Array.from(doc.querySelectorAll(".bottom-block"));
+        for (const blk of blocks) {
+          const head = ((blk.querySelector(".bottom-head, h3, h4") || {}).textContent || "").trim().toUpperCase();
+          const body = ((blk.querySelector(".bottom-text, p") || {}).textContent || "").replace(/\s+/g, " ").trim();
+          if (!body) continue;
+          if (!metar && (head.includes("METAR") || /^METAR\s+LTAZ\b/i.test(body))) metar = body;
+          else if (!taf && (head.includes("TAF") || /^TAF\s+/i.test(body))) taf = body;
+        }
+      } catch (_) {}
     }
 
     if (!items.length) {
-      const fallbackFlag = detectFlag(html);
-      if (fallbackFlag) {
-        items.push({ name: "Kapadokya", flag: fallbackFlag, label: (FL[fallbackFlag] && FL[fallbackFlag][1]) || "" });
-      }
+      items.push(...parseSectorBlocksRegex(html));
     }
 
-    const updMatch = fullText.match(/(?:Güncelleme|Son\s*Güncelleme|Yay[ıi]n\s*Tarihi)\s*[:\-]?\s*([0-9.:\/\-\s]{8,25})/i);
-    const valMatch = fullText.match(/(?:Geçerlilik|Geçerli)\s*[:\-]?\s*([0-9.:\/\-\s]{8,35})/i);
-    const metarMatch = fullText.match(/\bMETAR\s+LTAZ\s+[A-Z0-9\/\s=+-]{12,180}/);
-    const tafMatch = fullText.match(/\bTAF\s+(?:AMD\s+|COR\s+)?LTAZ\s+[A-Z0-9\/\s=+-]{12,260}/);
+    // KRİTİK EMNİYET KURALI: Geçerli .sector-div blokları bulunamadıysa ham sayfadan asla bayrak tahmin etme!
+    if (!items.length) return null;
+
+    if (!fullText) fullText = stripHtmlText(html);
+    if (!metar) {
+      const metarMatch = fullText.match(/\bMETAR\s+LTAZ\s+[A-Z0-9\/\s=+-]{12,180}/);
+      if (metarMatch) metar = metarMatch[0].trim();
+    }
+    if (!taf) {
+      const tafMatch = fullText.match(/\bTAF\s+(?:AMD\s+|COR\s+)?LTAZ\s+[A-Z0-9\/\s=+-]{12,260}/);
+      if (tafMatch) taf = tafMatch[0].trim();
+    }
+
+    const firstUpd = (items.find(i => i.updated) || {}).updated || "";
+    const firstVal = (items.find(i => i.valid) || {}).valid || "";
 
     return {
       items,
-      updated: updMatch ? updMatch[1].trim() : new Date().toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }),
-      valid: valMatch ? valMatch[1].trim() : "",
-      metar: metarMatch ? metarMatch[0].trim() : "",
-      taf: tafMatch ? tafMatch[0].trim() : "",
+      updated: firstUpd || new Date().toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }),
+      valid: firstVal,
+      metar,
+      taf,
       tafErr: "",
+      source: "direct",
     };
   }
 
   async function fetchDirectFromSite() {
     if (!navigator.onLine || !getCapHttp()) return null;
     try {
-      const html = await nativeGetText(SLOT_SITE_URL, 15000);
+      const html = await nativeGetText(SLOT_SITE_URL, 15000, true);
       if (!html) return null;
       const parsed = parseSlotHtml(html);
+      if (!parsed || !parsed.items || !parsed.items.length) return null;
       if (!parsed.metar) {
         try {
-          const m = await nativeGetText(METAR_RAW_URL, 8000);
+          const m = await nativeGetText(METAR_RAW_URL, 8000, false);
           if (m && m.trim()) parsed.metar = m.trim();
         } catch (_) {}
       }
       if (!parsed.taf) {
         try {
-          const t = await nativeGetText(TAF_RAW_URL, 8000);
+          const t = await nativeGetText(TAF_RAW_URL, 8000, false);
           if (t && t.trim()) parsed.taf = t.trim();
         } catch (_) {}
       }
-      return parsed.items.length ? parsed : null;
+      return parsed;
     } catch (_) {
       return null;
     }
@@ -312,9 +445,11 @@ const SLOT = (() => {
   async function load() {
     let nextData = null;
     let nextTs = "";
+    let directTried = false;
 
-    // 1) Android/iOS uygulamasının kendi içinden doğrudan resmî Slot Merkezi sayfasını kontrol et
+    // 1) Android/iOS uygulamasında doğrudan resmî Slot Merkezi sayfasından önbelleksiz oku
     if (isNative() && navigator.onLine) {
+      directTried = true;
       const direct = await fetchDirectFromSite();
       if (direct && direct.items && direct.items.length) {
         nextData = direct;
@@ -322,8 +457,8 @@ const SLOT = (() => {
       }
     }
 
-    // 2) Web sürümü veya yedek/METAR-TAF tamamlama için Supabase slot_status kontrolü
-    if (canOnline() && (!nextData || !nextData.metar || !nextData.taf)) {
+    // 2) Web sürümü (CORS nedeniyle) veya ilk açılışta doğrudan erişim yoksa Supabase yedeğini kontrol et
+    if (canOnline() && (!isNative() || (!nextData && !data) || (nextData && (!nextData.metar || !nextData.taf)))) {
       try {
         const { data: r } = await sb.from("slot_status").select("data,updated_at").eq("id", 1).maybeSingle();
         if (r && r.data) {
@@ -338,26 +473,60 @@ const SLOT = (() => {
       } catch (_) {}
     }
 
-    if (nextData) {
-      const old = data;
+    if (nextData && Array.isArray(nextData.items) && nextData.items.length) {
+      const prevSig = data ? sig(data) : loadLastSig();
+      const nextSig = sig(nextData);
+      const isFallback = directTried && nextData.source !== "direct";
       data = nextData;
       ts = nextTs || new Date().toISOString();
+      fetchErr = isFallback
+        ? "Resmî Slot Merkezi'ne şu an ulaşılamadı — son alınan yedek veri gösteriliyor."
+        : "";
       saveCache();
-      if (old && sig(old) !== sig(data)) {
-        banner = "🔔 Slot Merkezi güncellendi";
-        notifyChange(data);
+      if (!isFallback) {
+        saveLastSig(nextSig);
+        // Bildirimi YALNIZCA sektör bayrak/geçerlilik verisi gerçekten değiştiğinde gönder
+        if (prevSig && prevSig !== nextSig) {
+          banner = "🔔 Slot Merkezi güncellendi";
+          notifyChange(data);
+        }
       }
+      syncStaleTicker();
+      repaint();
+      scheduleNext();
+      return !fetchErr;
     }
+
+    fetchErr = navigator.onLine
+      ? "Resmî Slot Merkezi'ne şu an ulaşılamadı veya bayrak bilgisi okunamadı — son başarılı veri gösteriliyor."
+      : "İnternet bağlantısı yok — son başarılı veri gösteriliyor.";
+    syncStaleTicker();
     repaint();
     scheduleNext();
+    return false;
+  }
+  function syncStaleTicker() {
+    clearInterval(staleTickT);
+    staleTickT = null;
+    if (fetchErr && data && ts) {
+      staleTickT = setInterval(() => {
+        if (host && host.isConnected) repaint();
+      }, 60000);
+    }
   }
   async function refresh() {
     if (refreshing) return;
     refreshing = true;
     repaint();
     try {
-      await load();
-      if (typeof toast === "function") toast("Slot Merkezi kontrol edildi ✔");
+      const ok = await load();
+      if (typeof toast === "function") {
+        if (ok) toast("Slot Merkezi güncellendi ✔");
+        else {
+          const ago = elapsedText(ts);
+          toast(data ? `${ago || "Eski veri gösteriliyor"} (yeni veri alınamadı)` : "Slot Merkezi şu an alınamadı", true);
+        }
+      }
     } catch (_) {
       if (typeof toast === "function") toast("Slot Merkezi şu an alınamadı", true);
     }
@@ -483,7 +652,7 @@ const SLOT = (() => {
     }
     const body = data && data.items && data.items.length
       ? formatSummary(data)
-      : "🟢 Göreme: UÇULABİLİR · 🔴 Çat: UÇULMAZ (Test bildirimi)";
+      : "🔴 Sektör A: UÇULMAZ · 🔴 Sektör B: UÇULMAZ · 🔴 Sektör C: UÇULMAZ (Test bildirimi)";
     const ok = await AVNOTIF.showSlotAlert("🚩 AviaDoX · Slot Merkezi (Test)", body, true);
     if (ok) {
       try { localStorage.setItem(NATIVE_NOTIF_KEY, "1"); } catch (_) {}
@@ -569,8 +738,22 @@ const SLOT = (() => {
     return `<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><b>Bildirim</b><div class="mu">Slot kararı değiştiğinde telefon bildirimi gönder</div></div>${t}</div>`;
   }
   function flagCards() {
-    if (!data || !data.items) return '<p class="mu">Veri bekleniyor… (ilk güncelleme birkaç dakika sürebilir)</p>';
-    return `<div class="grid">${data.items.map(i => { const f = FL[i.flag] || ["⚪", i.label || "—", "var(--mu)"]; return `<div class="card stat"><b style="color:${f[2]}">${f[0]}</b><div style="font-weight:700">${esc(i.name)}</div><div class="mu">${esc(f[1])}</div></div>`; }).join("")}</div>`;
+    if (!data || !data.items || !data.items.length) {
+      return '<div class="card"><p class="mu" style="margin:0">Resmî Slot Merkezi verisi bekleniyor… Yenile düğmesine basarak kontrol edebilirsiniz.</p></div>';
+    }
+    return data.items.map(i => {
+      const f = FL[i.flag] || ["⚪", i.label || "—", "var(--mu)"];
+      const valLine = i.valid || data.valid || "";
+      const updLine = i.updated || data.updated || "";
+      return `<div class="card" style="border-left:4px solid ${f[2]}">
+<div class="row" style="align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+  <div style="font-size:16px;font-weight:700">${f[0]} ${esc(i.name)}</div>
+  <span style="font-size:12px;font-weight:700;color:${f[2]};padding:3px 8px;border-radius:6px;background:var(--bg)">${esc(f[1])}</span>
+</div>
+${valLine ? `<div class="mu" style="margin-top:6px;font-size:13px">🕒 Geçerli: <b>${esc(valLine)}</b>${updLine ? ` · Güncelleme: ${esc(updLine)}` : ""}</div>` : ""}
+${i.desc ? `<div style="margin-top:6px;font-size:13px;line-height:1.45">${esc(i.desc)}</div>` : ""}
+</div>`;
+    }).join("");
   }
   function metarCard() {
     if (!data) return "";
@@ -580,9 +763,18 @@ const SLOT = (() => {
   function scheduleInfoHtml() {
     return `<div class="mu" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--bd);display:flex;justify-content:space-between;align-items:flex-end;gap:8px;flex-wrap:wrap"><div>${scheduleStatusLine()}</div><button class="sec" style="width:auto;margin:0;padding:5px 10px;font-size:12px" onclick="S.tab='ak';render()">⚙️ Süre / Ayarlar</button></div>`;
   }
+  function staleWarnHtml() {
+    if (!fetchErr) return "";
+    const ago = data && ts ? elapsedText(ts) : "";
+    const title = ago ? `⚠️ ${ago}` : `⚠️ ${fetchErr}`;
+    const meta = (data && data.updated)
+      ? `Resmî güncelleme: ${esc(data.updated)}${ts ? " · Son kontrol: " + esc(tm(ts)) : ""}`
+      : (ts ? `Son kontrol: ${esc(tm(ts))}` : "");
+    return `<div class="card" style="border-color:var(--wa);background:rgba(245,158,11,.12)"><b>${esc(title)}</b><div class="mu" style="margin-top:4px">${ago ? esc(fetchErr) : "Güncel bilgi alınamadı; lütfen resmî sayfayı kontrol edin."}${meta ? "<br>" + meta : ""}</div></div>`;
+  }
   function view() {
     const d = data || {};
-    return `${banner ? `<div class="card" style="border-color:var(--pr)"><b>${esc(banner)}</b></div>` : ""}<div class="card"><div class="row" style="align-items:flex-start"><div style="flex:1;min-width:0"><b>Kapadokya Slot Merkezi</b><div class="mu">${d.updated ? "Güncelleme: " + esc(d.updated) : "Henüz veri yok"}${d.valid ? "<br>Geçerli: " + esc(d.valid) : ""}</div></div><button class="sec" style="width:auto;margin:0;padding:6px 10px;font-size:13px" onclick="SLOT.refresh()" ${refreshing ? "disabled" : ""}>${refreshing ? "…" : "↻ Yenile"}</button></div>${scheduleInfoHtml()}</div>${flagCards()}${pushCard()}<p class="mu" style="margin-top:10px">Kırmızı/sarı bayrak: kalkış izni verilmez. Yeşilde nihai uçuş kararı pilot ve işletmeye aittir. Bilgi resmî sayfadan otomatik alınır ve gecikebilir; resmî kaynağı esas alın. <a href="https://shmkapadokya.kapadokya.edu.tr" target="_blank" rel="noopener noreferrer" onclick="if(typeof openExternalUrl==='function'){openExternalUrl(this.href);return false;}">Slot Merkezi sayfası ↗</a>${ts ? " · Son kontrol: " + esc(tm(ts)) : ""}</p>`;
+    return `${banner ? `<div class="card" style="border-color:var(--pr)"><b>${esc(banner)}</b></div>` : ""}${staleWarnHtml()}<div class="card"><div class="row" style="align-items:flex-start"><div style="flex:1;min-width:0"><b>Kapadokya Slot Merkezi</b><div class="mu">${d.updated ? "Güncelleme: " + esc(d.updated) : "Henüz veri yok"}${d.valid ? "<br>Geçerli: " + esc(d.valid) : ""}</div></div><button class="sec" style="width:auto;margin:0;padding:6px 10px;font-size:13px" onclick="SLOT.refresh()" ${refreshing ? "disabled" : ""}>${refreshing ? "…" : "↻ Yenile"}</button></div>${scheduleInfoHtml()}</div>${flagCards()}${pushCard()}<p class="mu" style="margin-top:10px">Kırmızı/sarı bayrak: kalkış izni verilmez. Yeşilde nihai uçuş kararı pilot ve işletmeye aittir. Bilgi resmî sayfadan otomatik alınır ve gecikebilir; resmî kaynağı esas alın. <a href="https://shmkapadokya.kapadokya.edu.tr" target="_blank" rel="noopener noreferrer" onclick="if(typeof openExternalUrl==='function'){openExternalUrl(this.href);return false;}">Slot Merkezi sayfası ↗</a>${ts ? " · Son kontrol: " + esc(tm(ts)) : ""}</p>`;
   }
   function repaint() { if (host && host.isConnected) host.innerHTML = view(); if (typeof WX !== "undefined" && WX.slotChanged) WX.slotChanged(); }
   return {
@@ -600,6 +792,8 @@ const SLOT = (() => {
     isNotifOn: isNotifEnabled,
     metarCard,
     windowState,
+    elapsedText,
+    _parseSlotHtml: parseSlotHtml,
     get data() { return data; },
   };
 })();

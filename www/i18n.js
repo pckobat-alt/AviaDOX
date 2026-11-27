@@ -207,7 +207,13 @@ const I18N = (() => {
     "🚩 Slot Merkezi Kontrol Ayarları": "🚩 Slot Center Control Settings",
     "Kontrol sıklığı (dk)": "Check interval (min)",
     "🔔 Bildirimleri Aç": "🔔 Enable Notifications",
-    "🔕 Bildirimleri Kapat": "🔕 Disable Notifications"
+    "🔕 Bildirimleri Kapat": "🔕 Disable Notifications",
+    "Sektör A": "Sector A",
+    "Sektör B": "Sector B",
+    "Sektör C": "Sector C",
+    "Resmî Slot Merkezi'ne şu an ulaşılamadı veya sayfa okunamadı — son alınan veri gösteriliyor.": "Official Slot Center is unreachable or unreadable — showing last received data.",
+    "Resmî Slot Merkezi'ne şu an ulaşılamadı — son alınan yedek veri gösteriliyor.": "Official Slot Center is unreachable — showing last fallback data.",
+    "İnternet bağlantısı yok — son alınan veri gösteriliyor.": "No internet connection — showing last received data."
   };
 
   const L = "A-Za-zÇĞİÖŞÜçğıöşü0-9";
