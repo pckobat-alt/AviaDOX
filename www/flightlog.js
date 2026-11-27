@@ -101,6 +101,7 @@ function fresh(){return{co:null,root:null,map:null,sub:"map",status:"idle",fix:n
 const Q=fresh();
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const canDel=f=>(typeof isAdmin==="function"&&isAdmin())||!f.synced;
+const isMine=f=>!f.pilotUser||!(typeof S!=="undefined"&&S.user&&S.user.id)||f.pilotUser===S.user.id;
 
 /* ---------- depolama: IndexedDB (şirket + kullanıcı başına ayrı), olmazsa bellek ---------- */
 let dbp=null;const mem={flights:new Map(),meta:new Map()};
@@ -145,7 +146,7 @@ async function fetchRemote(){
  const cut=new Date(Date.now()-RET_DAYS*DAY).toISOString();
  const{data,error}=await sb.from("flights").select("*").gte("started_at",cut).order("started_at",{ascending:false}).limit(500);
  if(error)throw error;
- return(data||[]).map(x=>({id:x.id,name:x.name,createdAt:Date.parse(x.started_at),startedAt:Date.parse(x.started_at),endedAt:Date.parse(x.ended_at),durationSec:Number(x.duration_sec)||0,maxAlt:x.max_alt==null?null:Number(x.max_alt),distanceM:Number(x.distance_m)||0,pointCount:x.point_count,pilotName:x.pilot_name,filePath:x.file_path,synced:true}))
+ return(data||[]).map(x=>({id:x.id,name:x.name,createdAt:Date.parse(x.started_at),startedAt:Date.parse(x.started_at),endedAt:Date.parse(x.ended_at),durationSec:Number(x.duration_sec)||0,maxAlt:x.max_alt==null?null:Number(x.max_alt),distanceM:Number(x.distance_m)||0,pointCount:x.point_count,pilotName:x.pilot_name,pilotUser:x.pilot_user||null,filePath:x.file_path,synced:true}))
 }
 async function purgeRemote(){
  if(!isOnlineMode()||Date.now()-Q.lastPurge<36e5)return;
@@ -558,7 +559,7 @@ async function stop(){
 }
 async function finalize(pts,t0,t1){
  const name=flightFileName(new Date(t0));
- const rec={id:(typeof crypto!=="undefined"&&crypto.randomUUID?crypto.randomUUID():String(t0)+Math.random().toString(16).slice(2)),name,createdAt:t0,startedAt:t0,endedAt:t1,...flightStats(pts),pointCount:pts.length,pilotName:pilotName(),gpx:buildGpx(pts,{name,startedAt:t0})};
+ const rec={id:(typeof crypto!=="undefined"&&crypto.randomUUID?crypto.randomUUID():String(t0)+Math.random().toString(16).slice(2)),name,createdAt:t0,startedAt:t0,endedAt:t1,...flightStats(pts),pointCount:pts.length,pilotName:pilotName(),pilotUser:(typeof S!=="undefined"&&S.user&&S.user.id)?S.user.id:null,gpx:buildGpx(pts,{name,startedAt:t0})};
  await dbPut("flights",rec);Q.last=rec;ui();
  if(isOnlineMode())await syncFlight(rec);
  await refreshFlights();
@@ -624,6 +625,49 @@ async function share(rec){
   try{const f=new File([rec.gpx],rec.name,{type});if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:rec.name,text:"Balon uçuş kaydı (GPX)"});return}}catch(e){if(e&&e.name==="AbortError")return}
  }
  note("Bu cihaz paylaşımı desteklemiyor, dosya indiriliyor.");await saveGpx(rec);
+}
+
+/* ---------- uçuş simülatörü (sadece Kayıtlarım) ---------- */
+let simModal=null,simMsgH=null,simKeyH=null,simPrevOverflow="";
+function closeSim(){
+ if(simMsgH){window.removeEventListener("message",simMsgH);simMsgH=null}
+ if(simKeyH){window.removeEventListener("keydown",simKeyH);simKeyH=null}
+ if(simModal){simModal.remove();simModal=null}
+ document.body.style.overflow=simPrevOverflow;
+}
+async function openSim(rec){
+ if(!rec||!isMine(rec))return;
+ try{
+  rec=await withGpx(rec);
+  if(!rec.gpx)throw new Error("GPX verisi bulunamadı.");
+  closeSim();
+  simPrevOverflow=document.body.style.overflow||"";
+  document.body.style.overflow="hidden";
+  const wrap=document.createElement("div");
+  wrap.className="fl-sim-modal";
+  const ifr=document.createElement("iframe");
+  ifr.className="fl-sim-frame";
+  ifr.title="AviaDoX Uçuş Simülatörü";
+  ifr.src="simulator.html";
+  wrap.appendChild(ifr);
+  document.body.appendChild(wrap);
+  simModal=wrap;
+  const payload={type:"AVIADOX_LOAD_GPX",xml:rec.gpx,fileName:rec.name||"Flight.gpx",pilotName:rec.pilotName||""};
+  let delivered=false;
+  const send=()=>{if(!ifr.contentWindow)return;try{ifr.contentWindow.postMessage(payload,"*");delivered=true}catch(_){}};
+  simMsgH=e=>{
+   if(!e||!e.data||e.source!==ifr.contentWindow)return;
+   if(e.data.type==="AVIADOX_SIM_READY")send();
+   else if(e.data.type==="AVIADOX_SIM_CLOSE")closeSim();
+  };
+  simKeyH=e=>{if(e.key==="Escape")closeSim()};
+  window.addEventListener("message",simMsgH);
+  window.addEventListener("keydown",simKeyH);
+  ifr.addEventListener("load",()=>{if(!delivered)send()});
+ }catch(e){
+  closeSim();
+  note("Simülatör açılamadı: "+errMsg(e));
+ }
 }
 
 /* ---------- uyarı notu ---------- */
@@ -713,7 +757,7 @@ function build(){const r=document.createElement("div");r.className="fl";
   if(a==="sub"){Q.sub=b.dataset.v;showSub()}else if(a==="go"){Q.status==="running"?stop():start()}
   else if(a==="rc"){Q.follow=true;if(Q.fix)Q.map.center(Q.fix.lat,Q.fix.lon);ui()}else if(a==="zi")Q.map.zoomBy(1);else if(a==="zo")Q.map.zoomBy(-1);
   else if(a==="kfit"){if(Q.kml.polygons.length+Q.kml.lines.length+Q.kml.points.length){Q.follow=false;Q.map.fit(kmlBounds(Q.kml));ui()}}else if(a==="kclr")clearKml();
-  else if(a==="share"&&rec)share(rec);else if(a==="dl"&&rec)saveGpx(rec);else if(a==="dismiss"){Q.last=null;ui()}else if(a==="draftsave")draftSave();else if(a==="draftdel")draftDel();else if(a==="trim"&&rec)openTrim(rec);else if(a==="trimx"){Q.trimId=null;Q.trimSure=false;renderLog()}else if(a==="trimgo"&&rec)trimGo(rec)
+  else if(a==="share"&&rec)share(rec);else if(a==="dl"&&rec)saveGpx(rec);else if(a==="sim"&&rec&&isMine(rec))openSim(rec);else if(a==="dismiss"){Q.last=null;ui()}else if(a==="draftsave")draftSave();else if(a==="draftdel")draftDel();else if(a==="trim"&&rec)openTrim(rec);else if(a==="trimx"){Q.trimId=null;Q.trimSure=false;renderLog()}else if(a==="trimgo"&&rec)trimGo(rec)
   else if(a==="del"&&rec){if(Q.confirmId===id){clearTimeout(Q.confirmT);Q.confirmId=null;delFlight(rec).then(refreshFlights,e=>note("Silinemedi: "+errMsg(e)))}else{Q.confirmId=id;clearTimeout(Q.confirmT);Q.confirmT=setTimeout(()=>{Q.confirmId=null;renderLog()},4000);renderLog()}}});
  r.addEventListener("change",e=>{if(e.target.matches(".fl-cs")){const v=e.target.value.trim().toUpperCase().slice(0,12);e.target.value=v;try{localStorage.setItem(csKey(),v)}catch(_){}if(Q.status==="running"){Q.pubT=0;pubPos();pushGpxNotif(false,true)}return}if(e.target.matches(".fl-shr")){Q.share=e.target.checked;try{localStorage.setItem(shKey(),Q.share?"1":"0")}catch(_){}if(Q.share){Q.pubT=0;if(Q.status==="running")pubPos()}else pubClear()}else if(e.target.matches(".fl-kfile"))loadKml(e.target)})}
 function showSub(){if(!Q.root)return;Q.root.querySelector(".fl-p-map").hidden=Q.sub!=="map";Q.root.querySelector(".fl-p-log").hidden=Q.sub!=="log";Q.root.querySelectorAll(".fl-tabs button").forEach(b=>b.classList.toggle("on",b.dataset.v===Q.sub));if(Q.sub==="log")renderLog();else if(Q.map)Q.map.resize()}
@@ -749,7 +793,7 @@ function renderLog(){
   h+=`<div class="card"><div class="fl-rowh"><b>${esc(f.name)}</b><span><span class="badge ${f.synced?"ok":"wa"}">${f.synced?"Sunucuda":"Cihazda"}</span></span></div>
 <div>${f.pilotName?esc(f.pilotName)+" · ":""}${d.toLocaleDateString("tr-TR")} · ${d.toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"})}</div>
 <div class="mu">Süre ${fmtDur(f.durationSec*1000)} · Maks. yükseklik ${f.maxAlt==null?"–":Math.round(f.maxAlt)+" m"} · Mesafe ${(f.distanceM/1000).toFixed(1)} km · ${left} gün kaldı</div>
-<div class="fl-acts"><button data-act="share" data-id="${esc(f.id)}">Paylaş</button><button class="ghost" data-act="dl" data-id="${esc(f.id)}">GPX indir</button><button class="ghost" data-act="trim" data-id="${esc(f.id)}">✂️ Kırp</button>${canDel(f)?`<button class="ghost fl-del" data-act="del" data-id="${esc(f.id)}">${Q.confirmId===f.id?"Emin misin? Sil":"🗑 Sil"}</button>`:""}</div>${Q.trimId===f.id?`<div style="margin-top:10px;padding:10px;border:1px dashed var(--bd);border-radius:10px"><b>✂️ Uçuşu kırp</b><div class="mu" style="margin:4px 0 8px">Silmek istediğin süreyi dakika olarak yaz (örn. 5 veya 2.5). Geri alınamaz.</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div><label class="mu">Baştan (dk)</label><input type="number" min="0" step="0.5" inputmode="decimal" data-trim="h" value="${esc(Q.trimH)}"></div><div><label class="mu">Sondan (dk)</label><input type="number" min="0" step="0.5" inputmode="decimal" data-trim="t" value="${esc(Q.trimT)}"></div></div><div class="fl-tprev mu" style="margin:8px 0"></div><div class="fl-acts"><button data-act="trimgo" data-id="${esc(f.id)}">${Q.trimSure?"Emin misin? Kırp":"Kırp ve kaydet"}</button><button class="ghost" data-act="trimx">Vazgeç</button></div></div>`:""}</div>`;
+<div class="fl-acts"><button data-act="share" data-id="${esc(f.id)}">Paylaş</button><button class="ghost" data-act="dl" data-id="${esc(f.id)}">GPX indir</button><button class="ghost" data-act="trim" data-id="${esc(f.id)}">✂️ Kırp</button>${isMine(f)?`<button class="fl-sim-btn" data-act="sim" data-id="${esc(f.id)}">▶ Uçuşu izle</button>`:""}${canDel(f)?`<button class="ghost fl-del" data-act="del" data-id="${esc(f.id)}">${Q.confirmId===f.id?"Emin misin? Sil":"🗑 Sil"}</button>`:""}</div>${Q.trimId===f.id?`<div style="margin-top:10px;padding:10px;border:1px dashed var(--bd);border-radius:10px"><b>✂️ Uçuşu kırp</b><div class="mu" style="margin:4px 0 8px">Silmek istediğin süreyi dakika olarak yaz (örn. 5 veya 2.5). Geri alınamaz.</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div><label class="mu">Baştan (dk)</label><input type="number" min="0" step="0.5" inputmode="decimal" data-trim="h" value="${esc(Q.trimH)}"></div><div><label class="mu">Sondan (dk)</label><input type="number" min="0" step="0.5" inputmode="decimal" data-trim="t" value="${esc(Q.trimT)}"></div></div><div class="fl-tprev mu" style="margin:8px 0"></div><div class="fl-acts"><button data-act="trimgo" data-id="${esc(f.id)}">${Q.trimSure?"Emin misin? Kırp":"Kırp ve kaydet"}</button><button class="ghost" data-act="trimx">Vazgeç</button></div></div>`:""}</div>`;
  }
  el.innerHTML=h;
 }
@@ -798,6 +842,7 @@ function mount(host,co){
  showSub();ui();requestAnimationFrame(()=>{if(Q.map)Q.map.resize()});
 }
 function reset(){
+ closeSim();
  peersStop();
  if(Q.status==="running")pubClear();
  clearGpxNotif();

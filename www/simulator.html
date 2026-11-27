@@ -1,0 +1,1974 @@
+<!DOCTYPE html>
+<html lang="tr" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>AviaDoX Uçuş Simülatörü — GPX Telemetri</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Leaflet Harita Kütüphanesi -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Three.js 3B Görselleştirme -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- Chart.js Telemetri Grafiği -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+
+  <script>
+    if (typeof tailwind !== 'undefined') {
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            colors: {
+              cockpit: {
+                bg: '#0b1120',
+                panel: 'rgba(15, 23, 42, 0.85)',
+                border: 'rgba(56, 189, 248, 0.18)',
+              }
+            }
+          }
+        }
+      };
+    }
+  </script>
+
+  <style>
+    body {
+      background-color: #0b1120;
+      color: #f1f5f9;
+      overflow-x: hidden;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    .sim-header {
+      padding-top: calc(env(safe-area-inset-top, 0px) + 0.625rem);
+    }
+    .sim-footer {
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+    }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.82);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(56, 189, 248, 0.16);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+    }
+    .tabular-nums {
+      font-variant-numeric: tabular-nums;
+    }
+    /* Custom Range Slider */
+    input[type="range"].scrubber {
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
+      cursor: pointer;
+    }
+    input[type="range"].scrubber::-webkit-slider-runnable-track {
+      height: 6px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #38bdf8 var(--progress, 0%), #1e293b var(--progress, 0%));
+    }
+    input[type="range"].scrubber::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      margin-top: -5px;
+      background-color: #f59e0b;
+      border: 2px solid #fff;
+      height: 16px;
+      width: 16px;
+      border-radius: 50%;
+      box-shadow: 0 0 10px rgba(245, 158, 11, 0.8);
+      transition: transform 0.15s ease;
+    }
+    input[type="range"].scrubber::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+    /* Leaflet dark theme tweaks */
+    .leaflet-container {
+      background: #0b1120 !important;
+      font-family: 'Inter', sans-serif !important;
+    }
+    .leaflet-control-layers {
+      background: rgba(15, 23, 42, 0.9) !important;
+      color: #e2e8f0 !important;
+      border: 1px solid rgba(56, 189, 248, 0.25) !important;
+      border-radius: 0.75rem !important;
+    }
+    .leaflet-control-attribution {
+      background: rgba(11, 17, 32, 0.75) !important;
+      color: #94a3b8 !important;
+    }
+    .leaflet-control-attribution a {
+      color: #38bdf8 !important;
+    }
+    @keyframes pulseGlow {
+      0%, 100% { filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.85)); }
+      50% { filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.95)); }
+    }
+    .balloon-marker-glow {
+      animation: pulseGlow 2.5s infinite ease-in-out;
+    }
+    .btn-back-fallback {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      background: rgba(30, 41, 59, 0.95);
+      color: #f8fafc;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+    }
+  </style>
+<script src="/_aistudio-iframe.js?v=29045eb3"></script></head>
+<body class="min-h-screen flex flex-col justify-between selection:bg-amber-500/30">
+
+  <!-- Üst Başlık / Kokpit Üst Çubuğu -->
+  <header class="glass-panel sim-header sticky top-0 z-40 px-4 py-2.5 border-b border-sky-500/20">
+    <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <button id="btnCloseSim" type="button" class="btn-back-fallback px-3 py-2 rounded-xl bg-slate-800/95 hover:bg-slate-700 text-slate-100 border border-slate-600/60 text-xs sm:text-sm font-semibold transition flex items-center gap-1.5" title="Kayıtlarıma Dön">
+          <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M15 19l-7-7 7-7"/></svg>
+          <span>Geri</span>
+        </button>
+
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/20 shrink-0">
+          <!-- Sıcak Hava Balonu SVG İkonu -->
+          <svg class="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C7.58 2 4 5.58 4 10c0 3.31 2.19 6.65 4.62 9.15.32.33.76.52 1.22.52h4.32c.46 0 .9-.19 1.22-.52C17.81 16.65 20 13.31 20 10c0-4.42-3.58-8-8-8zm-1.5 19h3v1.5c0 .28-.22.5-.5.5h-2c-.28 0-.5-.22-.5-.5V21z"/>
+          </svg>
+        </div>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <h1 class="text-base sm:text-lg font-bold tracking-tight text-white truncate">AviaDoX Uçuş Simülatörü</h1>
+            <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/30 shrink-0">GPX TELEMETRİ</span>
+          </div>
+          <p id="flightTitleSubtitle" class="text-xs text-slate-400 font-mono truncate">Uçuş kaydı yükleniyor…</p>
+        </div>
+      </div>
+
+      <!-- Uçuş Fazı Göstergesi & Aksiyon Butonları -->
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+        <div id="flightPhaseBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-amber-500/30">
+          <span id="phaseDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+          <span class="text-xs text-slate-400">Uçuş Fazı:</span>
+          <span id="phaseLabel" class="text-xs sm:text-sm font-bold text-amber-400 tracking-wide">HAZIR</span>
+        </div>
+
+        <button id="btnSummaryModal" type="button" class="px-3 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-600/50 text-xs sm:text-sm font-medium transition flex items-center gap-1.5">
+          <svg class="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          <span>Uçuş Özeti</span>
+        </button>
+
+        <label class="px-3 py-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 text-xs sm:text-sm font-medium transition cursor-pointer flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+          <span>Yeni GPX Yükle</span>
+          <input type="file" id="gpxFileInput" accept=".gpx,application/gpx+xml,text/xml" class="hidden" />
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <!-- Çevrimdışı / Kütüphane Uyarısı -->
+  <div id="offlineNotice" class="hidden max-w-[1600px] w-full mx-auto px-4 pt-3">
+    <div class="rounded-xl bg-amber-500/15 border border-amber-500/40 px-4 py-2.5 text-xs text-amber-200">
+      Harita veya grafik kütüphaneleri yüklenemedi. 2B/3B harita ve grafikler için internet bağlantısı gerekir; telemetri verileri aşağıda gösterilmeye devam eder.
+    </div>
+  </div>
+
+  <!-- Ana İçerik Izgarası -->
+  <main class="flex-1 max-w-[1600px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+    <!-- Sol / Orta Ana Görünüm: 2B Uydu Haritası & 3B Yörünge Görünümü (8 Kolon) -->
+    <section class="lg:col-span-8 flex flex-col gap-4">
+      <!-- Harita & 3B Sahne Konteyneri -->
+      <div class="glass-panel rounded-2xl overflow-hidden flex flex-col relative h-[430px] sm:h-[510px]">
+        <!-- Görünüm Modu ve Kamera Kontrolleri Üst Bar -->
+        <div class="absolute top-3 left-3 right-3 z-[500] flex flex-wrap items-center justify-between gap-2 pointer-events-none">
+          <div class="flex items-center gap-1.5 bg-slate-950/85 backdrop-blur-md p-1 rounded-xl border border-slate-700/70 pointer-events-auto shadow-lg">
+            <button id="tabView2D" type="button" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-500 text-slate-950 transition">
+              2B Uydu Haritası
+            </button>
+            <button id="tabView3D" type="button" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white transition">
+              3B Yörünge &amp; İrtifa
+            </button>
+            <button id="tabViewSplit" type="button" class="hidden sm:inline-block px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white transition">
+              Bölünmüş Görünüm
+            </button>
+          </div>
+
+          <div class="flex items-center gap-2 pointer-events-auto">
+            <button id="btnCameraFollow" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40 backdrop-blur-md hover:bg-amber-500/30 transition flex items-center gap-1.5 shadow-lg">
+              <span id="followIndicator" class="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span>Kamerayı Takip Et: AÇIK</span>
+            </button>
+            <button id="btnFitBounds" type="button" class="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-900/85 text-slate-200 border border-slate-700/70 backdrop-blur-md hover:bg-slate-800 transition shadow-lg" title="Tüm Rotayı Sığdır">
+              Rotaya Odaklan
+            </button>
+          </div>
+        </div>
+
+        <!-- Harita & 3B İçerik Alanı -->
+        <div id="viewportContainer" class="w-full h-full flex relative">
+          <!-- 2B Leaflet Harita -->
+          <div id="map2dWrapper" class="w-full h-full relative transition-all duration-300">
+            <div id="map" class="w-full h-full"></div>
+            <!-- İrtifa Renk Skalası Lejantı -->
+            <div class="absolute bottom-3 left-3 z-[450] bg-slate-950/85 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-700/70 text-[11px] flex flex-col gap-1">
+              <span class="text-slate-400 font-medium">İrtifa Renk Skalası (MSL)</span>
+              <div class="flex items-center gap-2">
+                <span id="legendMinAlt" class="font-mono text-emerald-400">–</span>
+                <div class="w-24 h-2 rounded-full" style="background: linear-gradient(90deg, #10b981, #38bdf8, #f59e0b, #ef4444);"></div>
+                <span id="legendMaxAlt" class="font-mono text-rose-400">–</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3B Three.js Yörünge Görüntüleyici -->
+          <div id="view3dWrapper" class="hidden w-full h-full relative bg-slate-950">
+            <canvas id="threeCanvas" class="w-full h-full block"></canvas>
+            <div class="absolute bottom-3 left-3 z-10 bg-slate-950/85 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-700/70 text-[11px] text-slate-300 space-y-1">
+              <div class="font-semibold text-sky-400">3B Yörünge Kontrolleri</div>
+              <div>• Sol Tık / Sürükle: Açıyı Döndür</div>
+              <div>• Kaydırma (Scroll): Yakınlaş / Uzaklaş</div>
+              <div class="flex items-center gap-2 pt-1">
+                <label for="altExaggeration" class="text-slate-400">Dikey Ölçek:</label>
+                <select id="altExaggeration" class="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-amber-400 font-mono">
+                  <option value="1">1x (Gerçek)</option>
+                  <option value="1.5" selected>1.5x</option>
+                  <option value="2.5">2.5x</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Etkileşimli İrtifa & Telemetri Profil Grafiği -->
+      <div class="glass-panel rounded-2xl p-3 sm:p-4 flex flex-col gap-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <h2 class="text-xs sm:text-sm font-semibold text-slate-200 uppercase tracking-wider">Uçuş Profili &amp; Telemetri Grafiği</h2>
+            <span class="text-[11px] text-slate-400 hidden sm:inline">(Zaman çizelgesinde gezinmek için grafiğe tıklayın veya sürükleyin)</span>
+          </div>
+          <div class="flex items-center gap-3 text-xs">
+            <span class="flex items-center gap-1.5 text-sky-400"><span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span>İrtifa (m)</span>
+            <span class="flex items-center gap-1.5 text-emerald-400"><span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>Dikey Hız (m/s)</span>
+            <span class="flex items-center gap-1.5 text-amber-400"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>Yer Hızı (km/h)</span>
+          </div>
+        </div>
+        <div class="relative w-full h-[175px] sm:h-[195px] cursor-crosshair">
+          <canvas id="telemetryChart"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Sağ Panel: Gerçek Zamanlı Aviyonik Göstergeler (HUD) (4 Kolon) -->
+    <aside class="lg:col-span-4 flex flex-col gap-4">
+
+      <!-- Zaman & Konum Telemetri Kartı -->
+      <div class="glass-panel rounded-2xl p-4 flex flex-col gap-3">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+          <div>
+            <div class="text-[11px] uppercase tracking-wider text-slate-400">Yerel Saat (TRT UTC+3)</div>
+            <div id="hudLocalTime" class="text-xl sm:text-2xl font-bold font-mono text-white tabular-nums">--:--:--</div>
+          </div>
+          <div class="text-right">
+            <div class="text-[11px] uppercase tracking-wider text-slate-400">UTC Zamanı / Geçen Süre</div>
+            <div class="text-xs sm:text-sm font-mono text-slate-300 tabular-nums">
+              <span id="hudUtcTime">--:--:--Z</span> • <span id="hudElapsed" class="text-amber-400 font-semibold">00:00</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 text-xs font-mono">
+          <div class="bg-slate-950/70 rounded-xl p-2.5 border border-slate-800/80">
+            <span class="text-[10px] text-slate-400 block font-sans">ENLEM (LAT)</span>
+            <span id="hudLat" class="text-slate-200 font-semibold tabular-nums">–</span>
+          </div>
+          <div class="bg-slate-950/70 rounded-xl p-2.5 border border-slate-800/80">
+            <span class="text-[10px] text-slate-400 block font-sans">BOYLAM (LON)</span>
+            <span id="hudLon" class="text-slate-200 font-semibold tabular-nums">–</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- İrtifa (Altimetre) & Variometre (Dikey Hız) -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-4">
+        <!-- GPS İrtifa -->
+        <div class="glass-panel rounded-2xl p-4 flex flex-col justify-between relative overflow-hidden">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">İrtifa (GPS MSL)</span>
+            <span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-sky-500/15 text-sky-400">ALT</span>
+          </div>
+          <div class="my-2">
+            <div class="flex items-baseline gap-1.5">
+              <span id="hudAltM" class="text-3xl font-bold font-mono text-sky-400 tabular-nums">–</span>
+              <span class="text-sm font-mono text-slate-400">m</span>
+            </div>
+            <div class="text-xs font-mono text-slate-400 tabular-nums mt-0.5">
+              <span id="hudAltFt">–</span> ft • AGL: <span id="hudAglM" class="text-emerald-400">+0m</span>
+            </div>
+          </div>
+          <!-- Dikey İrtifa Barı -->
+          <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-800">
+            <div id="altProgressBar" class="h-full bg-gradient-to-r from-emerald-400 via-sky-400 to-amber-400 transition-all duration-150" style="width: 2%"></div>
+          </div>
+        </div>
+
+        <!-- Variometre / Dikey Hız -->
+        <div class="glass-panel rounded-2xl p-4 flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Dikey Hız (Vario)</span>
+            <span id="varioBadge" class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-800 text-slate-300">STABİL</span>
+          </div>
+          <div class="my-2">
+            <div class="flex items-baseline gap-1.5">
+              <span id="hudVspeed" class="text-3xl font-bold font-mono text-emerald-400 tabular-nums">+0.00</span>
+              <span class="text-sm font-mono text-slate-400">m/s</span>
+            </div>
+            <div class="text-xs font-mono text-slate-400 tabular-nums mt-0.5">
+              <span id="hudVspeedFpm">0</span> ft/dk
+            </div>
+          </div>
+          <!-- Çift Yönlü Variometre Göstergesi -->
+          <div class="relative w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800 flex items-center">
+            <div class="absolute left-1/2 top-0 bottom-0 w-0.5 bg-slate-500 z-10"></div>
+            <div id="varioBarNegative" class="h-full bg-rose-500 transition-all duration-150 ml-auto" style="width: 0%; margin-right: 50%;"></div>
+            <div id="varioBarPositive" class="h-full bg-emerald-400 transition-all duration-150" style="width: 0%; position: absolute; left: 50%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Yer Hızı & Pusula (Rota) & Rüzgar Göstergeleri -->
+      <div class="glass-panel rounded-2xl p-4 flex flex-col gap-4">
+        <div class="grid grid-cols-2 gap-3">
+          <!-- Yer Hızı -->
+          <div class="bg-slate-950/60 rounded-xl p-3 border border-slate-800/90 flex flex-col justify-between">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Yer Hızı (GS)</span>
+            <div class="mt-1">
+              <div class="flex items-baseline gap-1">
+                <span id="hudSpeedKmh" class="text-2xl font-bold font-mono text-amber-400 tabular-nums">0.0</span>
+                <span class="text-xs font-mono text-slate-400">km/h</span>
+              </div>
+              <div class="text-xs font-mono text-slate-400 tabular-nums">
+                <span id="hudSpeedMs">0.00</span> m/s • <span id="hudSpeedKt">0.0</span> kt
+              </div>
+            </div>
+          </div>
+
+          <!-- Kat Edilen Mesafe -->
+          <div class="bg-slate-950/60 rounded-xl p-3 border border-slate-800/90 flex flex-col justify-between">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Kat Edilen Mesafe</span>
+            <div class="mt-1">
+              <div class="flex items-baseline gap-1">
+                <span id="hudDistanceKm" class="text-2xl font-bold font-mono text-slate-100 tabular-nums">0.00</span>
+                <span class="text-xs font-mono text-slate-400">km</span>
+              </div>
+              <div class="text-xs font-mono text-slate-400 tabular-nums">
+                Toplam: <span id="hudTotalDistanceKm">0.00</span> km
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pusula (Rota) & Rüzgar Analizi -->
+        <div class="grid grid-cols-2 gap-3 pt-1">
+          <!-- Rota Pusulası -->
+          <div class="bg-slate-950/60 rounded-xl p-3 border border-slate-800/90 flex flex-col items-center justify-center relative">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 self-start mb-1">Rota (Heading)</span>
+            <div class="relative w-24 h-24 my-1 flex items-center justify-center">
+              <svg viewBox="0 0 100 100" class="w-full h-full">
+                <circle cx="50" cy="50" r="44" fill="none" stroke="#1e293b" stroke-width="3" />
+                <circle cx="50" cy="50" r="38" fill="none" stroke="#334155" stroke-width="1" stroke-dasharray="2 4" />
+                <text x="50" y="14" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="bold">K</text>
+                <text x="88" y="53" text-anchor="middle" fill="#94a3b8" font-size="8">D</text>
+                <text x="50" y="92" text-anchor="middle" fill="#94a3b8" font-size="8">G</text>
+                <text x="12" y="53" text-anchor="middle" fill="#94a3b8" font-size="8">B</text>
+                <!-- Rota İbresi -->
+                <g id="compassNeedle" transform="rotate(0 50 50)">
+                  <polygon points="50,16 55,50 50,44 45,50" fill="#38bdf8" />
+                  <polygon points="50,84 55,50 50,56 45,50" fill="#475569" />
+                </g>
+                <circle cx="50" cy="50" r="4" fill="#f8fafc" />
+              </svg>
+            </div>
+            <div class="text-sm font-bold font-mono text-sky-400 tabular-nums">
+              <span id="hudCourse">000°</span> <span id="hudCardinal" class="text-xs text-slate-400">K</span>
+            </div>
+          </div>
+
+          <!-- Rüzgar Yönü ve Hızı -->
+          <div class="bg-slate-950/60 rounded-xl p-3 border border-slate-800/90 flex flex-col items-center justify-center relative">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 self-start mb-1">Rüzgar (Esen)</span>
+            <div class="relative w-24 h-24 my-1 flex items-center justify-center">
+              <svg viewBox="0 0 100 100" class="w-full h-full">
+                <circle cx="50" cy="50" r="44" fill="none" stroke="#1e293b" stroke-width="3" />
+                <text x="50" y="14" text-anchor="middle" fill="#94a3b8" font-size="8">K</text>
+                <text x="88" y="53" text-anchor="middle" fill="#94a3b8" font-size="8">D</text>
+                <text x="50" y="92" text-anchor="middle" fill="#94a3b8" font-size="8">G</text>
+                <text x="12" y="53" text-anchor="middle" fill="#94a3b8" font-size="8">B</text>
+                <!-- Rüzgar Oku (Esme yönünden merkeze doğru) -->
+                <g id="windArrowGroup" transform="rotate(180 50 50)">
+                  <line x1="50" y1="14" x2="50" y2="78" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" />
+                  <polygon points="50,84 43,68 50,72 57,68" fill="#f59e0b" />
+                  <circle cx="50" cy="16" r="3.5" fill="#fbbf24" />
+                </g>
+              </svg>
+            </div>
+            <div class="text-sm font-bold font-mono text-amber-400 tabular-nums">
+              <span id="hudWindFrom">180°</span> • <span id="hudWindSpeed">0.0</span> <span class="text-xs text-slate-400">m/s</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hızlı Olay İşaretçileri (Bookmarks) -->
+      <div class="glass-panel rounded-2xl p-3.5 flex flex-col gap-2">
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Kritik Uçuş Anlarına Atla</span>
+        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-2 text-xs">
+          <button id="jumpBtn0" type="button" data-jump="0" class="jump-btn px-2.5 py-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/70 text-left transition">
+            <div id="jumpTitle0" class="font-semibold text-emerald-400">1. Kalkış</div>
+            <div id="jumpMeta0" class="text-[10px] font-mono text-slate-400">--:-- • –</div>
+          </button>
+          <button id="jumpBtn1" type="button" data-jump="0" class="jump-btn px-2.5 py-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/70 text-left transition">
+            <div id="jumpTitle1" class="font-semibold text-amber-400">2. Alçak Geçiş</div>
+            <div id="jumpMeta1" class="text-[10px] font-mono text-slate-400">--:-- • –</div>
+          </button>
+          <button id="jumpBtn2" type="button" data-jump="0" class="jump-btn px-2.5 py-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/70 text-left transition">
+            <div id="jumpTitle2" class="font-semibold text-rose-400">3. Maks. İrtifa</div>
+            <div id="jumpMeta2" class="text-[10px] font-mono text-slate-400">--:-- • –</div>
+          </button>
+          <button id="jumpBtn3" type="button" data-jump="0" class="jump-btn px-2.5 py-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/70 text-left transition">
+            <div id="jumpTitle3" class="font-semibold text-sky-400">4. Final İniş</div>
+            <div id="jumpMeta3" class="text-[10px] font-mono text-slate-400">--:-- • –</div>
+          </button>
+        </div>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- Alt Oynatma Kontrol Çubuğu -->
+  <footer class="glass-panel sim-footer sticky bottom-0 z-40 px-4 py-3 border-t border-sky-500/20">
+    <div class="max-w-[1600px] mx-auto flex flex-col sm:flex-row items-center gap-3 sm:gap-5">
+      <!-- Oynat / Duraklat / Sıfırla Butonları -->
+      <div class="flex items-center gap-2">
+        <button id="btnReset" type="button" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="Başa Sar">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0019 16V8a1 1 0 00-1.6-.8l-5.333 4zM4.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0011 16V8a1 1 0 00-1.6-.8l-5.334 4z"/></svg>
+        </button>
+        <button id="btnPlayPause" type="button" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold text-sm shadow-lg shadow-amber-500/25 transition flex items-center gap-2 min-w-[125px] justify-center">
+          <svg id="iconPlay" class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="iconPause" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          <span id="playPauseText">Başlat</span>
+        </button>
+      </div>
+
+      <!-- Zaman Çizelgesi Kaydırıcısı (Scrubber) -->
+      <div class="flex-1 w-full flex items-center gap-3">
+        <span id="scrubberCurrentTime" class="text-xs font-mono text-slate-300 tabular-nums w-16 text-right">--:--:--</span>
+        <input id="timelineScrubber" type="range" min="0" max="1000" value="0" class="scrubber flex-1" />
+        <span id="scrubberEndTime" class="text-xs font-mono text-slate-400 tabular-nums w-16">--:--:--</span>
+      </div>
+
+      <!-- Oynatma Hızı Seçici -->
+      <div class="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-700/70">
+        <span class="text-[11px] text-slate-400 px-2 hidden md:inline">Hız:</span>
+        <button type="button" data-speed="1" class="speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold text-slate-300 hover:text-white">1x</button>
+        <button type="button" data-speed="2" class="speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold text-slate-300 hover:text-white">2x</button>
+        <button type="button" data-speed="5" class="speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold text-slate-300 hover:text-white">5x</button>
+        <button type="button" data-speed="10" class="speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold bg-sky-500 text-slate-950">10x</button>
+        <button type="button" data-speed="20" class="speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold text-slate-300 hover:text-white">20x</button>
+        <button type="button" data-speed="50" class="speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold text-slate-300 hover:text-white">50x</button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Uçuş Özeti Modalı -->
+  <div id="summaryModal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+    <div class="glass-panel max-w-2xl w-full rounded-2xl p-6 border border-sky-500/30 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="min-w-0 pr-2">
+          <h3 class="text-lg font-bold text-white">Uçuş Özeti ve Telemetri İstatistikleri</h3>
+          <p id="modalFileName" class="text-xs font-mono text-sky-400 truncate">–</p>
+        </div>
+        <button id="closeSummaryModal" type="button" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 shrink-0">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono">
+        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+          <span class="text-[11px] font-sans text-slate-400 block">Toplam Kayıt Süresi</span>
+          <span id="statTotalDuration" class="text-lg font-bold text-white">–</span>
+          <span id="statActiveFlight" class="text-[11px] text-emerald-400 block mt-0.5">Aktif Uçuş: –</span>
+        </div>
+        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+          <span class="text-[11px] font-sans text-slate-400 block">Maksimum İrtifa</span>
+          <span id="statMaxAlt" class="text-lg font-bold text-rose-400">–</span>
+          <span id="statMaxAltFt" class="text-[11px] text-slate-400 block mt-0.5">– ft MSL</span>
+        </div>
+        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+          <span class="text-[11px] font-sans text-slate-400 block">Minimum İrtifa</span>
+          <span id="statMinAlt" class="text-lg font-bold text-emerald-400">–</span>
+          <span id="statAltGain" class="text-[11px] text-sky-400 block mt-0.5">İrtifa Farkı: –</span>
+        </div>
+        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+          <span class="text-[11px] font-sans text-slate-400 block">Toplam Mesafe</span>
+          <span id="statTotalDist" class="text-lg font-bold text-amber-400">–</span>
+          <span id="statPointCount" class="text-[11px] text-slate-400 block mt-0.5">– İz Noktası</span>
+        </div>
+        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+          <span class="text-[11px] font-sans text-slate-400 block">Maks. Tırmanış / Alçalış</span>
+          <span id="statMaxClimb" class="text-base font-bold text-emerald-400">–</span>
+          <span id="statMaxDescent" class="text-xs text-rose-400 block mt-0.5">–</span>
+        </div>
+        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+          <span class="text-[11px] font-sans text-slate-400 block">Maksimum Yer Hızı</span>
+          <span id="statMaxSpeed" class="text-lg font-bold text-sky-400">–</span>
+          <span id="statMaxSpeedMs" class="text-[11px] text-slate-400 block mt-0.5">– m/s</span>
+        </div>
+      </div>
+
+      <div class="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800 text-xs text-slate-300 leading-relaxed">
+        <strong class="text-amber-400">Uçuş Profili Analizi:</strong>
+        <span id="statProfileSummary">GPX verisi yüklendiğinde otomatik uçuş özeti burada görüntülenir.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Özel Bildirim Kutusu -->
+  <div id="toastNotification" class="fixed top-20 right-4 z-[1100] hidden px-4 py-3 rounded-xl glass-panel border border-amber-500/40 text-xs sm:text-sm text-slate-100 shadow-xl transition-opacity"></div>
+
+  <script>
+    // =========================================================================
+    // 1. UYGULAMA DURUMU VE YARDIMCI FONKSİYONLAR
+    // =========================================================================
+    const state = {
+      points: [],
+      stats: {},
+      bookmarks: { startIdx: 0, midLowIdx: 0, maxAltIdx: 0, landingIdx: 0, hasMidDip: false },
+      fileName: '',
+      pilotName: '',
+      isPlaying: false,
+      playbackSpeed: 10,
+      currentTimeSec: 0,
+      totalDurationSec: 0,
+      lastFrameTime: null,
+      cameraFollow: true,
+      viewMode: '2d', // '2d' | '3d' | 'split'
+      altExaggeration: 1.5,
+      sceneCenter: { lat: 38.6585, lon: 34.8310, lonMetersPerDeg: 86800 }
+    };
+
+    let rafId = null;
+    let isInitialized = false;
+    let pendingMessagePayload = null;
+    let chartListenersBound = false;
+
+    function showToast(msg) {
+      const toast = document.getElementById('toastNotification');
+      toast.textContent = msg;
+      toast.classList.remove('hidden');
+      clearTimeout(toast._timer);
+      toast._timer = setTimeout(() => {
+        toast.classList.add('hidden');
+      }, 3500);
+    }
+
+    function closeSimulator() {
+      togglePlayPause(false);
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      if (window.parent && window.parent !== window) {
+        try {
+          window.parent.postMessage({ type: 'AVIADOX_SIM_CLOSE' }, '*');
+          return;
+        } catch (_) {}
+      }
+      if (window.history.length > 1) {
+        window.history.back();
+      }
+    }
+
+    function haversineDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = deg => deg * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+    }
+
+    function computeBearing(lat1, lon1, lat2, lon2) {
+      const toRad = d => d * Math.PI / 180;
+      const p1 = toRad(lat1), p2 = toRad(lat2), dl = toRad(lon2 - lon1);
+      const y = Math.sin(dl) * Math.cos(p2);
+      const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+      return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+    }
+
+    function getAltitudeColor(alt, minAlt, maxAlt) {
+      const ratio = Math.max(0, Math.min(1, (alt - minAlt) / (maxAlt - minAlt || 1)));
+      if (ratio < 0.33) {
+        return interpolateHex('#10b981', '#38bdf8', ratio / 0.33);
+      } else if (ratio < 0.66) {
+        return interpolateHex('#38bdf8', '#f59e0b', (ratio - 0.33) / 0.33);
+      } else {
+        return interpolateHex('#f59e0b', '#ef4444', (ratio - 0.66) / 0.34);
+      }
+    }
+
+    function interpolateHex(c1, c2, t) {
+      const r1 = parseInt(c1.slice(1, 3), 16), g1 = parseInt(c1.slice(3, 5), 16), b1 = parseInt(c1.slice(5, 7), 16);
+      const r2 = parseInt(c2.slice(1, 3), 16), g2 = parseInt(c2.slice(3, 5), 16), b2 = parseInt(c2.slice(5, 7), 16);
+      const r = Math.round(r1 + (r2 - r1) * t);
+      const g = Math.round(g1 + (g2 - g1) * t);
+      const b = Math.round(b1 + (b2 - b1) * t);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    function getCardinalDirection(deg) {
+      const dirs = ['K', 'KKD', 'KD', 'DKD', 'D', 'DGD', 'GD', 'GGD', 'G', 'GGB', 'GB', 'BGB', 'B', 'BKB', 'KB', 'KKB'];
+      const idx = Math.round(((deg % 360) + 360) % 360 / 22.5) % 16;
+      return dirs[idx];
+    }
+
+    function formatTimeUTC(dateObj) {
+      return dateObj.toISOString().substring(11, 19) + 'Z';
+    }
+
+    function formatTimeLocalTRT(dateObj) {
+      const trt = new Date(dateObj.getTime() + 3 * 3600 * 1000);
+      return trt.toISOString().substring(11, 19);
+    }
+
+    function formatTimeShortTRT(dateObj) {
+      return formatTimeLocalTRT(dateObj).substring(0, 5);
+    }
+
+    function formatDuration(sec) {
+      const sTot = Math.max(0, Math.floor(sec));
+      const h = Math.floor(sTot / 3600);
+      const m = Math.floor((sTot % 3600) / 60);
+      const s = sTot % 60;
+      if (h > 0) {
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      }
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function formatDurationLong(sec) {
+      const sTot = Math.max(0, Math.floor(sec));
+      const h = Math.floor(sTot / 3600);
+      const m = Math.floor((sTot % 3600) / 60);
+      const s = sTot % 60;
+      if (h > 0) return `${h} sa ${m} dk ${s} sn`;
+      return `${m} dk ${s} sn`;
+    }
+
+    // =========================================================================
+    // 2. GPX PARSER VE TELEMETRİ ANALİZİ
+    // =========================================================================
+    function parseGPX(xmlText, fileName = 'Flight.gpx') {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+      if (xmlDoc.querySelector('parsererror')) {
+        throw new Error('GPX dosyası geçerli XML formatında değil.');
+      }
+
+      const trkpts = Array.from(xmlDoc.getElementsByTagNameNS('*', 'trkpt'));
+      if (!trkpts.length) {
+        throw new Error('GPX dosyasında iz noktası (trkpt) bulunamadı.');
+      }
+
+      const nameNode = xmlDoc.querySelector('trk > name') || xmlDoc.querySelector('metadata > name');
+      const parsedName = (fileName && fileName !== 'Flight.gpx')
+        ? fileName
+        : (nameNode ? nameNode.textContent.trim() : fileName);
+
+      const rawPoints = [];
+
+      for (let i = 0; i < trkpts.length; i++) {
+        const pt = trkpts[i];
+        const lat = parseFloat(pt.getAttribute('lat'));
+        const lon = parseFloat(pt.getAttribute('lon'));
+        if (!isFinite(lat) || !isFinite(lon)) continue;
+
+        const eleNode = pt.getElementsByTagNameNS('*', 'ele')[0];
+        const timeNode = pt.getElementsByTagNameNS('*', 'time')[0];
+
+        const eleParsed = eleNode ? parseFloat(eleNode.textContent) : NaN;
+        const ele = isFinite(eleParsed) ? eleParsed : 0;
+        const parsedTs = timeNode ? Date.parse(timeNode.textContent) : NaN;
+        const timestamp = isFinite(parsedTs) ? parsedTs : (Date.now() + i * 10000);
+        const time = new Date(timestamp);
+
+        const getExtVal = (tagName) => {
+          const all = pt.getElementsByTagName('*');
+          for (let el of all) {
+            if (el.localName === tagName) {
+              const v = parseFloat(el.textContent);
+              return isFinite(v) ? v : null;
+            }
+          }
+          return null;
+        };
+
+        const speedExt = getExtVal('speed');
+        const courseExt = getExtVal('course');
+        const vspeedExt = getExtVal('vspeed');
+        const gpsAltExt = getExtVal('gpsAlt');
+        const windSpeedExt = getExtVal('windSpeed');
+        const windFromExt = getExtVal('windFrom');
+
+        rawPoints.push({
+          index: rawPoints.length,
+          lat,
+          lon,
+          ele: gpsAltExt !== null ? gpsAltExt : ele,
+          time,
+          timestamp,
+          speed: speedExt,
+          course: courseExt,
+          vspeed: vspeedExt,
+          windSpeed: windSpeedExt,
+          windFrom: windFromExt
+        });
+      }
+
+      if (rawPoints.length < 2) {
+        throw new Error('Simülasyon için GPX dosyasında en az 2 geçerli iz noktası olmalıdır.');
+      }
+
+      // Zaman damgalarını kronolojik sıraya göre normalize et
+      for (let i = 1; i < rawPoints.length; i++) {
+        if (rawPoints[i].timestamp <= rawPoints[i - 1].timestamp) {
+          rawPoints[i].timestamp = rawPoints[i - 1].timestamp + 10000;
+          rawPoints[i].time = new Date(rawPoints[i].timestamp);
+        }
+      }
+
+      // Eksik uzantı alanlarını (speed, course, vspeed, wind) ardışık noktalardan türet
+      let lastValidCourse = 0;
+      for (let i = 0; i < rawPoints.length; i++) {
+        const p = rawPoints[i];
+        const prev = i > 0 ? rawPoints[i - 1] : null;
+        const next = i < rawPoints.length - 1 ? rawPoints[i + 1] : null;
+
+        if (p.speed === null) {
+          if (prev) {
+            const dt = (p.timestamp - prev.timestamp) / 1000;
+            const d = haversineDistance(prev.lat, prev.lon, p.lat, p.lon);
+            p.speed = dt > 0 ? d / dt : 0;
+          } else {
+            p.speed = 0;
+          }
+        }
+        if (p.vspeed === null) {
+          if (prev) {
+            const dt = (p.timestamp - prev.timestamp) / 1000;
+            p.vspeed = dt > 0 ? (p.ele - prev.ele) / dt : 0;
+          } else {
+            p.vspeed = 0;
+          }
+        }
+        if (p.course === null) {
+          if (prev && haversineDistance(prev.lat, prev.lon, p.lat, p.lon) >= 2) {
+            p.course = computeBearing(prev.lat, prev.lon, p.lat, p.lon);
+            lastValidCourse = p.course;
+          } else if (next && haversineDistance(p.lat, p.lon, next.lat, next.lon) >= 2) {
+            p.course = computeBearing(p.lat, p.lon, next.lat, next.lon);
+            lastValidCourse = p.course;
+          } else {
+            p.course = lastValidCourse;
+          }
+        } else {
+          lastValidCourse = p.course;
+        }
+        if (p.windSpeed === null) p.windSpeed = p.speed;
+        if (p.windFrom === null) p.windFrom = (p.course + 180) % 360;
+      }
+
+      const startTimestamp = rawPoints[0].timestamp;
+      let cumulativeDist = 0;
+      let minAlt = Infinity, maxAlt = -Infinity;
+      let maxClimb = -Infinity, maxDescent = Infinity;
+      let maxSpeed = 0;
+      let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+      let activeSec = 0;
+      let maxAltIdx = 0;
+
+      rawPoints.forEach((p, idx) => {
+        p.elapsedSec = (p.timestamp - startTimestamp) / 1000;
+        if (idx > 0) {
+          const prev = rawPoints[idx - 1];
+          const dt = (p.timestamp - prev.timestamp) / 1000;
+          const d = haversineDistance(prev.lat, prev.lon, p.lat, p.lon);
+          cumulativeDist += d;
+          if (p.speed >= 0.45 || Math.abs(p.vspeed) >= 0.18 || (p.ele - rawPoints[0].ele) > 15) {
+            activeSec += dt;
+          }
+        }
+        p.distMeters = cumulativeDist;
+
+        if (p.ele < minAlt) minAlt = p.ele;
+        if (p.ele > maxAlt) { maxAlt = p.ele; maxAltIdx = idx; }
+        if (p.vspeed > maxClimb) maxClimb = p.vspeed;
+        if (p.vspeed < maxDescent) maxDescent = p.vspeed;
+        if (p.speed > maxSpeed) maxSpeed = p.speed;
+        if (p.lat < minLat) minLat = p.lat;
+        if (p.lat > maxLat) maxLat = p.lat;
+        if (p.lon < minLon) minLon = p.lon;
+        if (p.lon > maxLon) maxLon = p.lon;
+      });
+
+      const totalDurationSec = rawPoints[rawPoints.length - 1].elapsedSec;
+      const activeFlightSec = activeSec > 10 ? Math.min(totalDurationSec, activeSec) : totalDurationSec;
+
+      // Kritik uçuş noktalarını dinamik belirle
+      // 4. Final İniş: Maksimum irtifa sonrası yere en yakın/düşük hızlı ilk iniş noktası (yoksa son nokta)
+      let landingIdx = rawPoints.length - 1;
+      const groundThreshold = minAlt + Math.max(12, (maxAlt - minAlt) * 0.04);
+      for (let i = maxAltIdx + 1; i < rawPoints.length; i++) {
+        if (rawPoints[i].ele <= groundThreshold && rawPoints[i].speed < 0.8 && Math.abs(rawPoints[i].vspeed) < 0.35) {
+          landingIdx = i;
+          break;
+        }
+      }
+
+      // 2. Orta / Alçak geçiş noktası: Kalkış ve maks. irtifa (veya iniş) arasındaki en düşük ara nokta
+      let midLowIdx = Math.floor(rawPoints.length / 3);
+      let hasMidDip = false;
+      const searchStart = Math.max(1, Math.floor(rawPoints.length * 0.12));
+      const searchEnd = Math.min(rawPoints.length - 2, Math.max(searchStart + 1, Math.min(maxAltIdx - 1, Math.floor(landingIdx * 0.78))));
+      if (searchEnd > searchStart + 3) {
+        let lowEle = Infinity;
+        for (let i = searchStart; i <= searchEnd; i++) {
+          if (rawPoints[i].ele < lowEle) {
+            lowEle = rawPoints[i].ele;
+            midLowIdx = i;
+          }
+        }
+        // Öncesinde yükselip sonra bu noktaya alçaldıysa belirgin vadi/alçak geçiş vardır
+        let prePeak = -Infinity;
+        for (let i = 0; i < midLowIdx; i++) {
+          if (rawPoints[i].ele > prePeak) prePeak = rawPoints[i].ele;
+        }
+        hasMidDip = (prePeak - lowEle) >= 40;
+      }
+
+      const centerLat = (minLat + maxLat) / 2;
+      const centerLon = (minLon + maxLon) / 2;
+      const lonMetersPerDeg = 111320 * Math.cos(centerLat * Math.PI / 180);
+
+      return {
+        fileName: parsedName,
+        points: rawPoints,
+        sceneCenter: { lat: centerLat, lon: centerLon, lonMetersPerDeg },
+        bookmarks: {
+          startIdx: 0,
+          midLowIdx,
+          maxAltIdx,
+          landingIdx,
+          hasMidDip
+        },
+        stats: {
+          minAlt,
+          maxAlt,
+          altGain: maxAlt - minAlt,
+          totalDistKm: cumulativeDist / 1000,
+          totalDurationSec,
+          activeFlightSec,
+          maxClimb: isFinite(maxClimb) ? maxClimb : 0,
+          maxDescent: isFinite(maxDescent) ? maxDescent : 0,
+          maxSpeed,
+          pointCount: rawPoints.length
+        }
+      };
+    }
+
+    function detectFlightPhase(pt) {
+      const t = pt.elapsedSec;
+      const alt = pt.ele;
+      const vs = pt.vspeed;
+      const spd = pt.speed;
+      const { minAlt, maxAlt } = state.stats;
+      const span = Math.max(1, maxAlt - minAlt);
+      const groundBand = minAlt + Math.max(14, span * 0.035);
+      const approachBand = minAlt + Math.max(40, span * 0.08);
+      const landSec = state.points[state.bookmarks.landingIdx]
+        ? state.points[state.bookmarks.landingIdx].elapsedSec
+        : state.totalDurationSec * 0.85;
+
+      if (t < Math.min(25, state.totalDurationSec * 0.05)) {
+        return { label: 'KALKIŞ (TAKEOFF)', color: 'text-emerald-400', dot: 'bg-emerald-400' };
+      }
+      if (state.bookmarks.hasMidDip) {
+        const dipPt = state.points[state.bookmarks.midLowIdx];
+        if (dipPt && Math.abs(t - dipPt.elapsedSec) <= 95 && alt <= dipPt.ele + 35) {
+          return { label: 'TOUCH & GO / ALÇAK GEÇİŞ', color: 'text-amber-400', dot: 'bg-amber-400' };
+        }
+      }
+      if (t >= landSec - 15 && alt <= groundBand && spd < 0.5 && Math.abs(vs) < 0.25) {
+        return { label: 'YER BEKLEMESİ (İNDİ)', color: 'text-slate-300', dot: 'bg-slate-400' };
+      }
+      if (t > state.totalDurationSec * 0.5 && alt <= approachBand && vs < -0.25) {
+        return { label: 'İNİŞ (LANDING)', color: 'text-sky-400', dot: 'bg-sky-400' };
+      }
+      if (vs >= 0.45) {
+        const afterMid = state.bookmarks.hasMidDip && state.points[state.bookmarks.midLowIdx] && t > state.points[state.bookmarks.midLowIdx].elapsedSec;
+        return { label: afterMid ? 'İKİNCİ TIRMANIŞ (CLIMB)' : 'TIRMANIŞ (CLIMB)', color: 'text-emerald-400', dot: 'bg-emerald-400' };
+      }
+      if (vs <= -0.45) {
+        return { label: 'ALÇALIŞ (DESCENT)', color: 'text-rose-400', dot: 'bg-rose-400' };
+      }
+      return { label: 'DÜZ UÇUŞ (CRUISE)', color: 'text-sky-400', dot: 'bg-sky-400' };
+    }
+
+    function getInterpolatedState(timeSec) {
+      const pts = state.points;
+      if (!pts.length) return null;
+      if (timeSec <= 0) return { ...pts[0], idx: 0 };
+      if (timeSec >= state.totalDurationSec) return { ...pts[pts.length - 1], idx: pts.length - 1 };
+
+      let low = 0, high = pts.length - 1;
+      while (low < high - 1) {
+        const mid = Math.floor((low + high) / 2);
+        if (pts[mid].elapsedSec <= timeSec) low = mid;
+        else high = mid;
+      }
+
+      const p1 = pts[low];
+      const p2 = pts[high];
+      const span = p2.elapsedSec - p1.elapsedSec || 1;
+      const t = Math.max(0, Math.min(1, (timeSec - p1.elapsedSec) / span));
+
+      const lerpAngle = (a, b, f) => {
+        const diff = ((b - a + 540) % 360) - 180;
+        return (a + diff * f + 360) % 360;
+      };
+
+      return {
+        idx: low,
+        lat: p1.lat + (p2.lat - p1.lat) * t,
+        lon: p1.lon + (p2.lon - p1.lon) * t,
+        ele: p1.ele + (p2.ele - p1.ele) * t,
+        speed: p1.speed + (p2.speed - p1.speed) * t,
+        course: lerpAngle(p1.course, p2.course, t),
+        vspeed: p1.vspeed + (p2.vspeed - p1.vspeed) * t,
+        windSpeed: p1.windSpeed + (p2.windSpeed - p1.windSpeed) * t,
+        windFrom: lerpAngle(p1.windFrom, p2.windFrom, t),
+        distMeters: p1.distMeters + (p2.distMeters - p1.distMeters) * t,
+        elapsedSec: timeSec,
+        time: new Date(p1.timestamp + (p2.timestamp - p1.timestamp) * t)
+      };
+    }
+
+    // =========================================================================
+    // 3. 2B LEAFLET HARİTA MOTORU
+    // =========================================================================
+    let map2d = null;
+    let routeLayerGroup = null;
+    let activeTrailPolyline = null;
+    let balloonMarker = null;
+    let markersLayerGroup = null;
+
+    function initMap2D() {
+      if (typeof L === 'undefined') {
+        document.getElementById('offlineNotice').classList.remove('hidden');
+        return;
+      }
+      map2d = L.map('map', {
+        zoomControl: false,
+        attributionControl: true
+      }).setView([38.658, 34.831], 14);
+
+      L.control.zoom({ position: 'bottomright' }).addTo(map2d);
+
+      const esriSat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Tiles &copy; Esri',
+        maxZoom: 19
+      });
+
+      const openTopo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+        attribution: 'Map data: &copy; OpenStreetMap, SRTM | OpenTopoMap',
+        maxZoom: 17
+      });
+
+      const cartoDark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        maxZoom: 19
+      });
+
+      esriSat.addTo(map2d);
+
+      L.control.layers({
+        'Uydu Görünümü (ESRI)': esriSat,
+        'Topografik Harita': openTopo,
+        'Karanlık Havacılık': cartoDark
+      }, null, { position: 'topright' }).addTo(map2d);
+
+      routeLayerGroup = L.layerGroup().addTo(map2d);
+      markersLayerGroup = L.layerGroup().addTo(map2d);
+
+      map2d.on('dragstart', () => {
+        if (state.cameraFollow) {
+          setCameraFollow(false);
+        }
+      });
+    }
+
+    function renderRouteOnMap2D() {
+      if (!map2d || !routeLayerGroup || !markersLayerGroup) return;
+      routeLayerGroup.clearLayers();
+      markersLayerGroup.clearLayers();
+      if (balloonMarker) {
+        map2d.removeLayer(balloonMarker);
+        balloonMarker = null;
+      }
+
+      const pts = state.points;
+      if (!pts.length) return;
+      const { minAlt, maxAlt } = state.stats;
+      const bm = state.bookmarks;
+
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const color = getAltitudeColor((p1.ele + p2.ele) / 2, minAlt, maxAlt);
+        L.polyline([[p1.lat, p1.lon], [p2.lat, p2.lon]], {
+          color,
+          weight: 4,
+          opacity: 0.55
+        }).addTo(routeLayerGroup);
+      }
+
+      activeTrailPolyline = L.polyline([], {
+        color: '#ffffff',
+        weight: 3,
+        dashArray: '6, 6',
+        opacity: 0.95
+      }).addTo(routeLayerGroup);
+
+      const createPinIcon = (bg, label) => L.divIcon({
+        className: 'custom-pin',
+        html: `<div style="background:${bg};" class="px-2 py-0.5 rounded-full text-[10px] font-bold text-slate-950 shadow-lg border border-white whitespace-nowrap -translate-x-1/2 -translate-y-1/2">${label}</div>`,
+        iconSize: [0, 0]
+      });
+
+      const startPt = pts[bm.startIdx];
+      L.marker([startPt.lat, startPt.lon], { icon: createPinIcon('#10b981', 'KALKIŞ') })
+        .bindPopup(`<b>Kalkış Noktası</b><br>Saat: ${formatTimeLocalTRT(startPt.time)} TRT<br>İrtifa: ${startPt.ele.toFixed(1)} m`)
+        .addTo(markersLayerGroup);
+
+      if (bm.hasMidDip && pts[bm.midLowIdx]) {
+        const touchPt = pts[bm.midLowIdx];
+        L.marker([touchPt.lat, touchPt.lon], { icon: createPinIcon('#f59e0b', 'ALÇAK GEÇİŞ') })
+          .bindPopup(`<b>Alçak Geçiş / Vadi</b><br>Saat: ${formatTimeLocalTRT(touchPt.time)} TRT<br>İrtifa: ${touchPt.ele.toFixed(1)} m`)
+          .addTo(markersLayerGroup);
+      }
+
+      const maxPt = pts[bm.maxAltIdx] || pts[0];
+      L.marker([maxPt.lat, maxPt.lon], { icon: createPinIcon('#ef4444', `TAVAN ${Math.round(maxPt.ele)}m`) })
+        .bindPopup(`<b>Maksimum İrtifa</b><br>Saat: ${formatTimeLocalTRT(maxPt.time)} TRT<br>İrtifa: ${maxPt.ele.toFixed(1)} m`)
+        .addTo(markersLayerGroup);
+
+      const endPt = pts[bm.landingIdx] || pts[pts.length - 1];
+      L.marker([endPt.lat, endPt.lon], { icon: createPinIcon('#38bdf8', 'İNİŞ') })
+        .bindPopup(`<b>İniş Noktası</b><br>Saat: ${formatTimeLocalTRT(endPt.time)} TRT<br>İrtifa: ${endPt.ele.toFixed(1)} m`)
+        .addTo(markersLayerGroup);
+
+      const balloonHtml = `
+        <div class="relative w-16 h-16 -ml-8 -mt-8 flex items-center justify-center pointer-events-none">
+          <svg id="mapWindVectorSvg" viewBox="0 0 80 80" class="w-16 h-16 absolute inset-0 transition-transform duration-150">
+            <circle cx="40" cy="40" r="32" fill="none" stroke="rgba(245,158,11,0.45)" stroke-width="1.5" stroke-dasharray="4 3"/>
+            <line x1="40" y1="4" x2="40" y2="20" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"/>
+            <polygon points="40,22 36,15 44,15" fill="#f59e0b"/>
+          </svg>
+          <div class="w-9 h-9 rounded-full bg-slate-950/90 border-2 border-amber-400 flex items-center justify-center balloon-marker-glow z-10">
+            <svg class="w-6 h-6 text-amber-400" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C7.58 2 4 5.58 4 10c0 3.31 2.19 6.65 4.62 9.15.32.33.76.52 1.22.52h4.32c.46 0 .9-.19 1.22-.52C17.81 16.65 20 13.31 20 10c0-4.42-3.58-8-8-8zm-1.5 19h3v1.5c0 .28-.22.5-.5.5h-2c-.28 0-.5-.22-.5-.5V21z"/>
+            </svg>
+          </div>
+        </div>
+      `;
+
+      const balloonIcon = L.divIcon({
+        className: 'balloon-live-icon',
+        html: balloonHtml,
+        iconSize: [0, 0]
+      });
+
+      balloonMarker = L.marker([startPt.lat, startPt.lon], { icon: balloonIcon, zIndexOffset: 1000 }).addTo(map2d);
+
+      fitMapBounds();
+    }
+
+    function fitMapBounds() {
+      if (!state.points.length || !map2d) return;
+      const latlngs = state.points.map(p => [p.lat, p.lon]);
+      map2d.fitBounds(L.latLngBounds(latlngs), { padding: [45, 45] });
+    }
+
+    // =========================================================================
+    // 4. 3B THREE.JS YÖRÜNGE VE BALON SİMÜLASYONU
+    // =========================================================================
+    let scene3d, camera3d, renderer3d, balloonMesh3d, groundShadow3d, dropLine3d, routeGroup3d;
+    let isDragging3D = false, prevMouse3D = { x: 0, y: 0 };
+    let camTheta = 0.65, camPhi = 1.05, camRadius = 380;
+    let camTarget3D = null;
+
+    function init3DScene() {
+      if (typeof THREE === 'undefined') return;
+      camTarget3D = new THREE.Vector3(0, 40, 0);
+      const canvas = document.getElementById('threeCanvas');
+      scene3d = new THREE.Scene();
+      scene3d.background = new THREE.Color('#070d19');
+      scene3d.fog = new THREE.FogExp2('#070d19', 0.00075);
+
+      camera3d = new THREE.PerspectiveCamera(48, 16 / 9, 1, 8000);
+      renderer3d = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer3d.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+      const ambientLight = new THREE.AmbientLight(0x94a3b8, 1.1);
+      scene3d.add(ambientLight);
+
+      const dirLight = new THREE.DirectionalLight(0xfef3c7, 1.4);
+      dirLight.position.set(200, 400, 150);
+      scene3d.add(dirLight);
+
+      const gridHelper = new THREE.GridHelper(1400, 40, 0x1e293b, 0x0f172a);
+      scene3d.add(gridHelper);
+
+      const planeGeo = new THREE.PlaneGeometry(1400, 1400);
+      const planeMat = new THREE.MeshStandardMaterial({
+        color: 0x0b1324,
+        roughness: 0.9,
+        metalness: 0.1
+      });
+      const groundPlane = new THREE.Mesh(planeGeo, planeMat);
+      groundPlane.rotation.x = -Math.PI / 2;
+      groundPlane.position.y = -0.5;
+      scene3d.add(groundPlane);
+
+      routeGroup3d = new THREE.Group();
+      scene3d.add(routeGroup3d);
+
+      balloonMesh3d = new THREE.Group();
+
+      const envGeo = new THREE.SphereGeometry(9, 24, 20);
+      envGeo.scale(1, 1.25, 1);
+      const envMat = new THREE.MeshStandardMaterial({
+        color: 0xf59e0b,
+        emissive: 0xb45309,
+        emissiveIntensity: 0.35,
+        roughness: 0.35
+      });
+      const envelope = new THREE.Mesh(envGeo, envMat);
+      envelope.position.y = 14;
+      balloonMesh3d.add(envelope);
+
+      const bandGeo = new THREE.CylinderGeometry(8.9, 8.9, 3.2, 24);
+      const bandMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.4 });
+      const band = new THREE.Mesh(bandGeo, bandMat);
+      band.position.y = 14;
+      balloonMesh3d.add(band);
+
+      const basketGeo = new THREE.BoxGeometry(3.2, 2.4, 3.2);
+      const basketMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.8 });
+      const basket = new THREE.Mesh(basketGeo, basketMat);
+      basket.position.y = 1.5;
+      balloonMesh3d.add(basket);
+
+      scene3d.add(balloonMesh3d);
+
+      const shadowGeo = new THREE.CircleGeometry(7, 24);
+      const shadowMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+      groundShadow3d = new THREE.Mesh(shadowGeo, shadowMat);
+      groundShadow3d.rotation.x = -Math.PI / 2;
+      groundShadow3d.position.y = 0.2;
+      scene3d.add(groundShadow3d);
+
+      const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 10, 0)]);
+      const lineMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.7 });
+      dropLine3d = new THREE.Line(lineGeo, lineMat);
+      scene3d.add(dropLine3d);
+
+      canvas.addEventListener('mousedown', e => {
+        isDragging3D = true;
+        prevMouse3D = { x: e.clientX, y: e.clientY };
+      });
+      window.addEventListener('mouseup', () => { isDragging3D = false; });
+      window.addEventListener('mousemove', e => {
+        if (!isDragging3D) return;
+        const dx = e.clientX - prevMouse3D.x;
+        const dy = e.clientY - prevMouse3D.y;
+        camTheta -= dx * 0.007;
+        camPhi = Math.max(0.15, Math.min(Math.PI / 2 - 0.05, camPhi - dy * 0.007));
+        prevMouse3D = { x: e.clientX, y: e.clientY };
+      });
+      canvas.addEventListener('wheel', e => {
+        e.preventDefault();
+        camRadius = Math.max(80, Math.min(2000, camRadius + e.deltaY * 0.35));
+      }, { passive: false });
+
+      canvas.addEventListener('touchstart', e => {
+        if (e.touches.length === 1) {
+          isDragging3D = true;
+          prevMouse3D = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        }
+      }, { passive: true });
+      canvas.addEventListener('touchend', () => { isDragging3D = false; });
+      canvas.addEventListener('touchmove', e => {
+        if (!isDragging3D || e.touches.length !== 1) return;
+        const dx = e.touches[0].clientX - prevMouse3D.x;
+        const dy = e.touches[0].clientY - prevMouse3D.y;
+        camTheta -= dx * 0.008;
+        camPhi = Math.max(0.15, Math.min(Math.PI / 2 - 0.05, camPhi - dy * 0.008));
+        prevMouse3D = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }, { passive: true });
+    }
+
+    function latLonAltTo3D(lat, lon, ele) {
+      if (typeof THREE === 'undefined') return null;
+      const { lat: centerLat, lon: centerLon, lonMetersPerDeg } = state.sceneCenter;
+      const baseEle = isFinite(state.stats.minAlt) ? state.stats.minAlt : 0;
+
+      // Ölçek: 1 sahne birimi = 5 metre
+      const scale = 0.2;
+      const x = (lon - centerLon) * lonMetersPerDeg * scale;
+      const z = -(lat - centerLat) * 111132 * scale;
+      const y = Math.max(0, (ele - baseEle) * scale * state.altExaggeration);
+      return new THREE.Vector3(x, y, z);
+    }
+
+    function rebuild3DRoute() {
+      if (!routeGroup3d || typeof THREE === 'undefined') return;
+      while (routeGroup3d.children.length > 0) {
+        routeGroup3d.remove(routeGroup3d.children[0]);
+      }
+
+      const pts = state.points;
+      if (pts.length < 2) return;
+
+      const { minAlt, maxAlt } = state.stats;
+      const vertices = [];
+      const colors = [];
+      const groundVertices = [];
+      const pillarStep = Math.max(1, Math.floor(pts.length / 24));
+
+      pts.forEach((p, idx) => {
+        const v = latLonAltTo3D(p.lat, p.lon, p.ele);
+        vertices.push(v.x, v.y, v.z);
+        groundVertices.push(v.x, 0.3, v.z);
+
+        const c = new THREE.Color(getAltitudeColor(p.ele, minAlt, maxAlt));
+        colors.push(c.r, c.g, c.b);
+
+        if (idx % pillarStep === 0) {
+          const pillarGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(v.x, 0, v.z),
+            new THREE.Vector3(v.x, v.y, v.z)
+          ]);
+          const pillarMat = new THREE.LineBasicMaterial({ color: 0x334155, transparent: true, opacity: 0.45 });
+          routeGroup3d.add(new THREE.Line(pillarGeo, pillarMat));
+        }
+      });
+
+      const trajGeo = new THREE.BufferGeometry();
+      trajGeo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+      trajGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      const trajMat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 });
+      routeGroup3d.add(new THREE.Line(trajGeo, trajMat));
+
+      const gGeo = new THREE.BufferGeometry();
+      gGeo.setAttribute('position', new THREE.Float32BufferAttribute(groundVertices, 3));
+      const gMat = new THREE.LineBasicMaterial({ color: 0x1e293b });
+      routeGroup3d.add(new THREE.Line(gGeo, gMat));
+    }
+
+    function resize3DRenderer() {
+      const wrapper = document.getElementById('view3dWrapper');
+      if (!wrapper || wrapper.classList.contains('hidden') || !renderer3d) return;
+      const w = wrapper.clientWidth;
+      const h = wrapper.clientHeight;
+      if (w > 0 && h > 0) {
+        renderer3d.setSize(w, h, false);
+        camera3d.aspect = w / h;
+        camera3d.updateProjectionMatrix();
+      }
+    }
+
+    function render3DFrame(currentPos3D) {
+      if (!renderer3d || !camTarget3D || document.getElementById('view3dWrapper').classList.contains('hidden')) return;
+      resize3DRenderer();
+
+      if (currentPos3D && balloonMesh3d) {
+        balloonMesh3d.position.copy(currentPos3D);
+        groundShadow3d.position.set(currentPos3D.x, 0.2, currentPos3D.z);
+
+        const posArr = dropLine3d.geometry.attributes.position.array;
+        posArr[0] = currentPos3D.x; posArr[1] = 0; posArr[2] = currentPos3D.z;
+        posArr[3] = currentPos3D.x; posArr[4] = currentPos3D.y; posArr[5] = currentPos3D.z;
+        dropLine3d.geometry.attributes.position.needsUpdate = true;
+
+        if (state.cameraFollow) {
+          camTarget3D.lerp(currentPos3D, 0.12);
+        }
+      }
+
+      camera3d.position.x = camTarget3D.x + camRadius * Math.sin(camPhi) * Math.sin(camTheta);
+      camera3d.position.y = Math.max(8, camTarget3D.y + camRadius * Math.cos(camPhi));
+      camera3d.position.z = camTarget3D.z + camRadius * Math.sin(camPhi) * Math.cos(camTheta);
+      camera3d.lookAt(camTarget3D);
+
+      renderer3d.render(scene3d, camera3d);
+    }
+
+    // =========================================================================
+    // 5. CHART.JS TELEMETRİ PROFİL GRAFİĞİ
+    // =========================================================================
+    let telemetryChart = null;
+    const currentCursorPlugin = {
+      id: 'currentCursor',
+      afterDatasetsDraw(chart) {
+        const { ctx, chartArea: { top, bottom }, scales: { x } } = chart;
+        if (!state.points.length) return;
+        const ratio = state.currentTimeSec / (state.totalDurationSec || 1);
+        const idx = ratio * (state.points.length - 1);
+        const xPos = x.getPixelForValue(idx);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(xPos, top);
+        ctx.lineTo(xPos, bottom);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#f59e0b';
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+
+        ctx.fillStyle = '#f59e0b';
+        ctx.beginPath();
+        ctx.moveTo(xPos, top + 6);
+        ctx.lineTo(xPos - 5, top);
+        ctx.lineTo(xPos + 5, top);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    };
+
+    function bindChartScrubListeners() {
+      if (chartListenersBound) return;
+      chartListenersBound = true;
+      const chartCanvas = document.getElementById('telemetryChart');
+      let isScrubbingChart = false;
+
+      const scrubFromMouseEvent = (e) => {
+        if (!telemetryChart || !state.points.length) return;
+        const rect = chartCanvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const x = clientX - rect.left;
+        const xScale = telemetryChart.scales.x;
+        const val = xScale.getValueForPixel(x);
+        const clampedIdx = Math.max(0, Math.min(state.points.length - 1, val));
+        const ratio = clampedIdx / (state.points.length - 1 || 1);
+        seekToTime(ratio * state.totalDurationSec);
+      };
+
+      chartCanvas.addEventListener('mousedown', e => {
+        isScrubbingChart = true;
+        scrubFromMouseEvent(e);
+      });
+      window.addEventListener('mousemove', e => {
+        if (isScrubbingChart) scrubFromMouseEvent(e);
+      });
+      window.addEventListener('mouseup', () => { isScrubbingChart = false; });
+
+      chartCanvas.addEventListener('touchstart', e => {
+        isScrubbingChart = true;
+        scrubFromMouseEvent(e);
+      }, { passive: true });
+      chartCanvas.addEventListener('touchmove', e => {
+        if (isScrubbingChart) scrubFromMouseEvent(e);
+      }, { passive: true });
+      chartCanvas.addEventListener('touchend', () => { isScrubbingChart = false; });
+    }
+
+    function initTelemetryChart() {
+      if (typeof Chart === 'undefined') {
+        document.getElementById('offlineNotice').classList.remove('hidden');
+        return;
+      }
+      const ctx = document.getElementById('telemetryChart').getContext('2d');
+      const labels = state.points.map(p => formatTimeLocalTRT(p.time));
+      const altData = state.points.map(p => p.ele);
+      const vsData = state.points.map(p => p.vspeed);
+      const speedKmhData = state.points.map(p => +(p.speed * 3.6).toFixed(1));
+
+      if (telemetryChart) {
+        telemetryChart.destroy();
+      }
+
+      const varioMin = Math.min(-4.5, Math.floor((state.stats.maxDescent || -3) - 1));
+      const varioMax = Math.max(3.5, Math.ceil((state.stats.maxClimb || 2) + 1));
+      const speedMax = Math.max(25, Math.ceil((state.stats.maxSpeed || 5) * 3.6 * 1.25));
+
+      telemetryChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'İrtifa (m)',
+              data: altData,
+              borderColor: '#38bdf8',
+              backgroundColor: 'rgba(56, 189, 248, 0.14)',
+              borderWidth: 2,
+              fill: true,
+              pointRadius: 0,
+              tension: 0.25,
+              yAxisID: 'yAlt'
+            },
+            {
+              label: 'Dikey Hız (m/s)',
+              data: vsData,
+              borderColor: '#10b981',
+              borderWidth: 1.5,
+              pointRadius: 0,
+              tension: 0.25,
+              yAxisID: 'yVario'
+            },
+            {
+              label: 'Yer Hızı (km/h)',
+              data: speedKmhData,
+              borderColor: '#f59e0b',
+              borderWidth: 1.5,
+              borderDash: [3, 3],
+              pointRadius: 0,
+              tension: 0.25,
+              yAxisID: 'ySpeed'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: {
+            mode: 'index',
+            intersect: false
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: 'rgba(15, 23, 42, 0.92)',
+              titleColor: '#f8fafc',
+              bodyColor: '#cbd5e1',
+              borderColor: 'rgba(56, 189, 248, 0.3)',
+              borderWidth: 1
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(51, 65, 85, 0.25)' },
+              ticks: {
+                color: '#94a3b8',
+                maxTicksLimit: 10,
+                font: { family: 'JetBrains Mono', size: 10 }
+              }
+            },
+            yAlt: {
+              type: 'linear',
+              position: 'left',
+              grid: { color: 'rgba(51, 65, 85, 0.25)' },
+              ticks: {
+                color: '#38bdf8',
+                font: { family: 'JetBrains Mono', size: 10 },
+                callback: v => Math.round(v) + 'm'
+              }
+            },
+            yVario: {
+              type: 'linear',
+              position: 'right',
+              min: varioMin,
+              max: varioMax,
+              grid: { drawOnChartArea: false },
+              ticks: {
+                color: '#10b981',
+                font: { family: 'JetBrains Mono', size: 10 },
+                callback: v => v + 'm/s'
+              }
+            },
+            ySpeed: {
+              type: 'linear',
+              display: false,
+              min: 0,
+              max: speedMax
+            }
+          }
+        },
+        plugins: [currentCursorPlugin]
+      });
+
+      bindChartScrubListeners();
+    }
+
+    // =========================================================================
+    // 6. ARAYÜZ GÜNCELLEME VE SİMÜLASYON DÖNGÜSÜ
+    // =========================================================================
+    function updateHUDAndVisuals() {
+      const cur = getInterpolatedState(state.currentTimeSec);
+      if (!cur) return;
+
+      document.getElementById('hudLocalTime').textContent = formatTimeLocalTRT(cur.time);
+      document.getElementById('hudUtcTime').textContent = formatTimeUTC(cur.time);
+      document.getElementById('hudElapsed').textContent = formatDuration(cur.elapsedSec);
+      document.getElementById('scrubberCurrentTime').textContent = formatTimeLocalTRT(cur.time);
+
+      const latHem = cur.lat >= 0 ? 'K' : 'G';
+      const lonHem = cur.lon >= 0 ? 'D' : 'B';
+      document.getElementById('hudLat').textContent = `${Math.abs(cur.lat).toFixed(6)}° ${latHem}`;
+      document.getElementById('hudLon').textContent = `${Math.abs(cur.lon).toFixed(6)}° ${lonHem}`;
+
+      const { minAlt, maxAlt } = state.stats;
+      const altFt = Math.round(cur.ele * 3.28084);
+      const aglM = Math.max(0, Math.round(cur.ele - minAlt));
+      document.getElementById('hudAltM').textContent = cur.ele.toFixed(1);
+      document.getElementById('hudAltFt').textContent = altFt.toLocaleString('tr-TR');
+      document.getElementById('hudAglM').textContent = `+${aglM}m`;
+
+      const altPct = Math.max(2, Math.min(100, ((cur.ele - minAlt) / (maxAlt - minAlt || 1)) * 100));
+      document.getElementById('altProgressBar').style.width = `${altPct}%`;
+
+      const vsSign = cur.vspeed > 0.01 ? '+' : '';
+      const vsFpm = Math.round(cur.vspeed * 196.85);
+      const hudVsEl = document.getElementById('hudVspeed');
+      hudVsEl.textContent = `${vsSign}${cur.vspeed.toFixed(2)}`;
+      document.getElementById('hudVspeedFpm').textContent = `${vsSign}${vsFpm}`;
+
+      const varioBadge = document.getElementById('varioBadge');
+      const posBar = document.getElementById('varioBarPositive');
+      const negBar = document.getElementById('varioBarNegative');
+
+      if (cur.vspeed > 0.15) {
+        hudVsEl.className = 'text-3xl font-bold font-mono text-emerald-400 tabular-nums';
+        varioBadge.textContent = 'TIRMANIŞ';
+        varioBadge.className = 'px-1.5 py-0.5 text-[10px] font-mono rounded bg-emerald-500/20 text-emerald-400';
+      } else if (cur.vspeed < -0.15) {
+        hudVsEl.className = 'text-3xl font-bold font-mono text-rose-400 tabular-nums';
+        varioBadge.textContent = 'ALÇALIŞ';
+        varioBadge.className = 'px-1.5 py-0.5 text-[10px] font-mono rounded bg-rose-500/20 text-rose-400';
+      } else {
+        hudVsEl.className = 'text-3xl font-bold font-mono text-sky-400 tabular-nums';
+        varioBadge.textContent = 'STABİL';
+        varioBadge.className = 'px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-800 text-slate-300';
+      }
+
+      const maxScaleVs = 4.0;
+      if (cur.vspeed >= 0) {
+        posBar.style.width = `${Math.min(50, (cur.vspeed / maxScaleVs) * 50)}%`;
+        negBar.style.width = '0%';
+      } else {
+        negBar.style.width = `${Math.min(50, (Math.abs(cur.vspeed) / maxScaleVs) * 50)}%`;
+        posBar.style.width = '0%';
+      }
+
+      const kmh = cur.speed * 3.6;
+      const knots = cur.speed * 1.94384;
+      document.getElementById('hudSpeedKmh').textContent = kmh.toFixed(1);
+      document.getElementById('hudSpeedMs').textContent = cur.speed.toFixed(2);
+      document.getElementById('hudSpeedKt').textContent = knots.toFixed(1);
+      document.getElementById('hudDistanceKm').textContent = (cur.distMeters / 1000).toFixed(2);
+
+      const courseRounded = Math.round(((cur.course % 360) + 360) % 360) % 360;
+      document.getElementById('hudCourse').textContent = `${String(courseRounded).padStart(3, '0')}°`;
+      document.getElementById('hudCardinal').textContent = getCardinalDirection(cur.course);
+      document.getElementById('compassNeedle').setAttribute('transform', `rotate(${cur.course} 50 50)`);
+
+      const windFromRounded = Math.round(((cur.windFrom % 360) + 360) % 360) % 360;
+      document.getElementById('hudWindFrom').textContent = `${String(windFromRounded).padStart(3, '0')}°`;
+      document.getElementById('hudWindSpeed').textContent = cur.windSpeed.toFixed(1);
+      document.getElementById('windArrowGroup').setAttribute('transform', `rotate(${cur.windFrom} 50 50)`);
+
+      const phase = detectFlightPhase(cur);
+      const phaseLabel = document.getElementById('phaseLabel');
+      const phaseDot = document.getElementById('phaseDot');
+      phaseLabel.textContent = phase.label;
+      phaseLabel.className = `text-xs sm:text-sm font-bold tracking-wide ${phase.color}`;
+      phaseDot.className = `w-2.5 h-2.5 rounded-full animate-pulse ${phase.dot}`;
+
+      const progress = (state.currentTimeSec / (state.totalDurationSec || 1)) * 100;
+      const scrubber = document.getElementById('timelineScrubber');
+      scrubber.value = Math.round(progress * 10);
+      scrubber.style.setProperty('--progress', `${progress}%`);
+
+      if (balloonMarker && map2d) {
+        balloonMarker.setLatLng([cur.lat, cur.lon]);
+        const windSvg = document.getElementById('mapWindVectorSvg');
+        if (windSvg) {
+          windSvg.style.transform = `rotate(${cur.windFrom}deg)`;
+        }
+
+        const passedLatLngs = state.points.slice(0, cur.idx + 1).map(p => [p.lat, p.lon]);
+        passedLatLngs.push([cur.lat, cur.lon]);
+        activeTrailPolyline.setLatLngs(passedLatLngs);
+
+        if (state.cameraFollow && !document.getElementById('map2dWrapper').classList.contains('hidden')) {
+          map2d.panTo([cur.lat, cur.lon], { animate: false });
+        }
+      }
+
+      const pos3d = latLonAltTo3D(cur.lat, cur.lon, cur.ele);
+      render3DFrame(pos3d);
+
+      if (telemetryChart) {
+        telemetryChart.draw();
+      }
+    }
+
+    function seekToTime(sec) {
+      state.currentTimeSec = Math.max(0, Math.min(state.totalDurationSec, sec));
+      updateHUDAndVisuals();
+    }
+
+    function togglePlayPause(forceState = null) {
+      state.isPlaying = forceState !== null ? forceState : !state.isPlaying;
+      const iconPlay = document.getElementById('iconPlay');
+      const iconPause = document.getElementById('iconPause');
+      const textEl = document.getElementById('playPauseText');
+
+      if (state.isPlaying) {
+        if (state.currentTimeSec >= state.totalDurationSec) {
+          state.currentTimeSec = 0;
+        }
+        state.lastFrameTime = performance.now();
+        iconPlay.classList.add('hidden');
+        iconPause.classList.remove('hidden');
+        textEl.textContent = 'Duraklat';
+      } else {
+        iconPlay.classList.remove('hidden');
+        iconPause.classList.add('hidden');
+        textEl.textContent = state.currentTimeSec > 0 ? 'Devam Et' : 'Başlat';
+      }
+    }
+
+    function setCameraFollow(enabled) {
+      state.cameraFollow = enabled;
+      const btn = document.getElementById('btnCameraFollow');
+      const dot = document.getElementById('followIndicator');
+      if (enabled) {
+        btn.className = 'px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40 backdrop-blur-md hover:bg-amber-500/30 transition flex items-center gap-1.5 shadow-lg';
+        dot.className = 'w-2 h-2 rounded-full bg-amber-400';
+        btn.querySelector('span:last-child').textContent = 'Kamerayı Takip Et: AÇIK';
+      } else {
+        btn.className = 'px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900/85 text-slate-300 border border-slate-700/70 backdrop-blur-md hover:bg-slate-800 transition flex items-center gap-1.5 shadow-lg';
+        dot.className = 'w-2 h-2 rounded-full bg-slate-500';
+        btn.querySelector('span:last-child').textContent = 'Kamerayı Takip Et: KAPALI';
+      }
+    }
+
+    function setViewMode(mode) {
+      state.viewMode = mode;
+      const mapWrap = document.getElementById('map2dWrapper');
+      const v3dWrap = document.getElementById('view3dWrapper');
+      const tab2d = document.getElementById('tabView2D');
+      const tab3d = document.getElementById('tabView3D');
+      const tabSplit = document.getElementById('tabViewSplit');
+
+      const activeCls = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-500 text-slate-950 transition';
+      const inactiveCls = 'px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white transition';
+
+      tab2d.className = mode === '2d' ? activeCls : inactiveCls;
+      tab3d.className = mode === '3d' ? activeCls : inactiveCls;
+      if (tabSplit) tabSplit.className = mode === 'split' ? activeCls : inactiveCls;
+
+      if (mode === '2d') {
+        mapWrap.classList.remove('hidden', 'w-1/2');
+        mapWrap.classList.add('w-full');
+        v3dWrap.classList.add('hidden');
+        v3dWrap.classList.remove('w-1/2');
+      } else if (mode === '3d') {
+        v3dWrap.classList.remove('hidden', 'w-1/2');
+        v3dWrap.classList.add('w-full');
+        mapWrap.classList.add('hidden');
+        mapWrap.classList.remove('w-1/2');
+      } else if (mode === 'split') {
+        mapWrap.classList.remove('hidden', 'w-full');
+        mapWrap.classList.add('w-1/2', 'border-r', 'border-slate-700');
+        v3dWrap.classList.remove('hidden', 'w-full');
+        v3dWrap.classList.add('w-1/2');
+      }
+
+      setTimeout(() => {
+        if (map2d) map2d.invalidateSize();
+        resize3DRenderer();
+        updateHUDAndVisuals();
+      }, 60);
+    }
+
+    function populateBookmarks() {
+      const pts = state.points;
+      const bm = state.bookmarks;
+      const items = [
+        { idx: bm.startIdx, title: '1. Kalkış' },
+        { idx: bm.midLowIdx, title: bm.hasMidDip ? '2. Vadi / Alçak Geçiş' : '2. Orta Seyir' },
+        { idx: bm.maxAltIdx, title: '3. Maks. İrtifa' },
+        { idx: bm.landingIdx, title: '4. Final İniş' }
+      ];
+      items.forEach((item, i) => {
+        const p = pts[item.idx] || pts[0];
+        const btn = document.getElementById(`jumpBtn${i}`);
+        const tEl = document.getElementById(`jumpTitle${i}`);
+        const mEl = document.getElementById(`jumpMeta${i}`);
+        if (btn) btn.dataset.jump = String(item.idx);
+        if (tEl) tEl.textContent = item.title;
+        if (mEl && p) mEl.textContent = `${formatTimeShortTRT(p.time)} • ${Math.round(p.ele)}m`;
+      });
+    }
+
+    function populateSummaryStats() {
+      const s = state.stats;
+      const pts = state.points;
+      const bm = state.bookmarks;
+      const startPt = pts[bm.startIdx];
+      const maxPt = pts[bm.maxAltIdx] || pts[0];
+      const endPt = pts[bm.landingIdx] || pts[pts.length - 1];
+      const dateStr = startPt ? startPt.time.toLocaleDateString('tr-TR') : '';
+
+      document.getElementById('flightTitleSubtitle').textContent =
+        [state.fileName, state.pilotName, dateStr].filter(Boolean).join(' • ');
+      document.getElementById('modalFileName').textContent = state.fileName;
+      document.getElementById('legendMinAlt').textContent = `${Math.round(s.minAlt)}m`;
+      document.getElementById('legendMaxAlt').textContent = `${Math.round(s.maxAlt)}m`;
+      document.getElementById('hudTotalDistanceKm').textContent = s.totalDistKm.toFixed(2);
+      document.getElementById('scrubberEndTime').textContent = formatTimeLocalTRT(pts[pts.length - 1].time);
+
+      document.getElementById('statTotalDuration').textContent = formatDurationLong(s.totalDurationSec);
+      document.getElementById('statActiveFlight').textContent = `Aktif Uçuş: ~${formatDurationLong(s.activeFlightSec)}`;
+      document.getElementById('statMaxAlt').textContent = `${s.maxAlt.toFixed(1)} m`;
+      document.getElementById('statMaxAltFt').textContent = `${Math.round(s.maxAlt * 3.28084).toLocaleString('tr-TR')} ft MSL`;
+      document.getElementById('statMinAlt').textContent = `${s.minAlt.toFixed(1)} m`;
+      document.getElementById('statAltGain').textContent = `İrtifa Farkı: ${s.altGain.toFixed(1)} m`;
+      document.getElementById('statTotalDist').textContent = `${s.totalDistKm.toFixed(2)} km`;
+      document.getElementById('statPointCount').textContent = `${s.pointCount} İz Noktası`;
+      const climbSign = s.maxClimb >= 0 ? '+' : '';
+      document.getElementById('statMaxClimb').textContent = `${climbSign}${s.maxClimb.toFixed(2)} m/s`;
+      document.getElementById('statMaxDescent').textContent = `${s.maxDescent.toFixed(2)} m/s`;
+      document.getElementById('statMaxSpeed').textContent = `${(s.maxSpeed * 3.6).toFixed(1)} km/h`;
+      document.getElementById('statMaxSpeedMs').textContent = `${s.maxSpeed.toFixed(2)} m/s`;
+
+      let analysis = `${formatTimeShortTRT(startPt.time)} (TRT) saatinde ${startPt.ele.toFixed(1)} m irtifadan başlayan uçuşta `;
+      if (bm.hasMidDip && pts[bm.midLowIdx]) {
+        const dip = pts[bm.midLowIdx];
+        analysis += `${formatTimeShortTRT(dip.time)} sularında ${dip.ele.toFixed(1)} m seviyesine alçak geçiş yapılmış, `;
+      }
+      analysis += `${formatTimeShortTRT(maxPt.time)} (TRT) itibarıyla ${maxPt.ele.toFixed(1)} m tavan irtifaya ulaşılmıştır. `;
+      analysis += `Toplam ${s.totalDistKm.toFixed(2)} km mesafe kat edilerek ${formatTimeShortTRT(endPt.time)} (TRT) saatinde ${endPt.ele.toFixed(1)} m irtifada iniş tamamlanmıştır (maks. yer hızı ${(s.maxSpeed * 3.6).toFixed(1)} km/h, tırmanış ${climbSign}${s.maxClimb.toFixed(2)} m/s, alçalış ${s.maxDescent.toFixed(2)} m/s).`;
+      document.getElementById('statProfileSummary').textContent = analysis;
+
+      populateBookmarks();
+    }
+
+    function loadGPXContent(xmlText, fileName, pilotName) {
+      try {
+        const parsed = parseGPX(xmlText, fileName);
+        state.points = parsed.points;
+        state.stats = parsed.stats;
+        state.bookmarks = parsed.bookmarks;
+        state.sceneCenter = parsed.sceneCenter;
+        state.fileName = parsed.fileName;
+        state.pilotName = pilotName || '';
+        state.totalDurationSec = parsed.stats.totalDurationSec;
+        state.currentTimeSec = 0;
+        togglePlayPause(false);
+
+        populateSummaryStats();
+        renderRouteOnMap2D();
+        rebuild3DRoute();
+        initTelemetryChart();
+        updateHUDAndVisuals();
+      } catch (err) {
+        showToast('Hata: ' + err.message);
+      }
+    }
+
+    function animationLoop(now) {
+      rafId = requestAnimationFrame(animationLoop);
+
+      if (state.isPlaying && state.points.length) {
+        if (state.lastFrameTime !== null) {
+          const dtSec = (now - state.lastFrameTime) / 1000;
+          state.currentTimeSec += dtSec * state.playbackSpeed;
+          if (state.currentTimeSec >= state.totalDurationSec) {
+            state.currentTimeSec = state.totalDurationSec;
+            togglePlayPause(false);
+            showToast('Uçuş simülasyonu tamamlandı.');
+          }
+          updateHUDAndVisuals();
+        }
+        state.lastFrameTime = now;
+      } else {
+        state.lastFrameTime = now;
+        if (state.points.length && !document.getElementById('view3dWrapper').classList.contains('hidden')) {
+          const cur = getInterpolatedState(state.currentTimeSec);
+          if (cur) render3DFrame(latLonAltTo3D(cur.lat, cur.lon, cur.ele));
+        }
+      }
+    }
+
+    // Üst pencereden (AviaDoX Kayıtlarım) gelen GPX verisini dinle
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || data.type !== 'AVIADOX_LOAD_GPX' || !data.xml) return;
+      if (!isInitialized) {
+        pendingMessagePayload = data;
+        return;
+      }
+      loadGPXContent(data.xml, data.fileName || 'Flight.gpx', data.pilotName || '');
+    });
+
+    // =========================================================================
+    // 7. OLAY DİNLEYİCİLERİ VE BAŞLATMA
+    // =========================================================================
+    window.addEventListener('DOMContentLoaded', () => {
+      initMap2D();
+      init3DScene();
+      isInitialized = true;
+
+      document.getElementById('btnCloseSim').addEventListener('click', closeSimulator);
+
+      document.getElementById('btnPlayPause').addEventListener('click', () => {
+        if (!state.points.length) return;
+        togglePlayPause();
+      });
+      document.getElementById('btnReset').addEventListener('click', () => {
+        if (!state.points.length) return;
+        togglePlayPause(false);
+        seekToTime(0);
+      });
+
+      document.getElementById('timelineScrubber').addEventListener('input', (e) => {
+        if (!state.points.length) return;
+        const ratio = parseFloat(e.target.value) / 1000;
+        seekToTime(ratio * state.totalDurationSec);
+      });
+
+      document.querySelectorAll('.speed-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          state.playbackSpeed = parseFloat(btn.dataset.speed);
+          document.querySelectorAll('.speed-btn').forEach(b => {
+            b.className = 'speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold text-slate-300 hover:text-white';
+          });
+          btn.className = 'speed-btn px-2 py-1 rounded-lg text-xs font-mono font-semibold bg-sky-500 text-slate-950';
+        });
+      });
+
+      document.getElementById('tabView2D').addEventListener('click', () => setViewMode('2d'));
+      document.getElementById('tabView3D').addEventListener('click', () => setViewMode('3d'));
+      document.getElementById('tabViewSplit').addEventListener('click', () => setViewMode('split'));
+
+      document.getElementById('btnCameraFollow').addEventListener('click', () => setCameraFollow(!state.cameraFollow));
+      document.getElementById('btnFitBounds').addEventListener('click', () => {
+        setCameraFollow(false);
+        fitMapBounds();
+      });
+
+      document.getElementById('altExaggeration').addEventListener('change', (e) => {
+        state.altExaggeration = parseFloat(e.target.value);
+        rebuild3DRoute();
+        updateHUDAndVisuals();
+      });
+
+      document.querySelectorAll('.jump-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (!state.points.length) return;
+          const idx = Math.min(state.points.length - 1, parseInt(btn.dataset.jump, 10) || 0);
+          if (state.points[idx]) {
+            seekToTime(state.points[idx].elapsedSec);
+          }
+        });
+      });
+
+      const modal = document.getElementById('summaryModal');
+      document.getElementById('btnSummaryModal').addEventListener('click', () => {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+      });
+      document.getElementById('closeSummaryModal').addEventListener('click', () => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      });
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+          modal.classList.add('hidden');
+          modal.classList.remove('flex');
+        }
+      });
+
+      document.getElementById('gpxFileInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          loadGPXContent(ev.target.result, file.name, '');
+          showToast(`"${file.name}" başarıyla yüklendi.`);
+        };
+        reader.readAsText(file);
+      });
+
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'Escape') {
+          if (!modal.classList.contains('hidden')) {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+          } else {
+            closeSimulator();
+          }
+        } else if (e.code === 'Space' && state.points.length) {
+          e.preventDefault();
+          togglePlayPause();
+        } else if (e.code === 'ArrowRight' && state.points.length) {
+          seekToTime(state.currentTimeSec + 15);
+        } else if (e.code === 'ArrowLeft' && state.points.length) {
+          seekToTime(state.currentTimeSec - 15);
+        }
+      });
+
+      window.addEventListener('resize', () => {
+        if (map2d) map2d.invalidateSize();
+        resize3DRenderer();
+      });
+
+      // Önceden mesaj geldiyse yükle, yoksa üst pencereye hazır olduğunu bildir
+      if (pendingMessagePayload) {
+        loadGPXContent(pendingMessagePayload.xml, pendingMessagePayload.fileName || 'Flight.gpx', pendingMessagePayload.pilotName || '');
+        pendingMessagePayload = null;
+      } else if (window.parent && window.parent !== window) {
+        try {
+          window.parent.postMessage({ type: 'AVIADOX_SIM_READY' }, '*');
+        } catch (_) {}
+      } else {
+        document.getElementById('flightTitleSubtitle').textContent = 'GPX dosyası seçmek için "Yeni GPX Yükle" düğmesini kullanın';
+      }
+
+      rafId = requestAnimationFrame(animationLoop);
+    });
+  </script>
+</body>
+</html>

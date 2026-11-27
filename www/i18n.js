@@ -213,7 +213,10 @@ const I18N = (() => {
     "Sektör C": "Sector C",
     "Resmî Slot Merkezi'ne şu an ulaşılamadı veya sayfa okunamadı — son alınan veri gösteriliyor.": "Official Slot Center is unreachable or unreadable — showing last received data.",
     "Resmî Slot Merkezi'ne şu an ulaşılamadı — son alınan yedek veri gösteriliyor.": "Official Slot Center is unreachable — showing last fallback data.",
-    "İnternet bağlantısı yok — son alınan veri gösteriliyor.": "No internet connection — showing last received data."
+    "İnternet bağlantısı yok — son alınan veri gösteriliyor.": "No internet connection — showing last received data.",
+    "▶ Uçuşu izle": "▶ Watch flight",
+    "Uçuşu izle": "Watch flight",
+    "Simülatör açılamadı:": "Simulator could not be opened:"
   };
 
   const L = "A-Za-zÇĞİÖŞÜçğıöşü0-9";
