@@ -10,6 +10,7 @@ Bu paket, AviaDoX web uygulamasının güvenlik denetiminden geçmiş, gereksiz 
 AviaDoX-Android-iOS-Paketi/
 ├── package.json                               ← Capacitor 6 (Android + iOS + BackgroundGeolocation + Notifications + Supabase)
 ├── capacitor.config.json                      ← Android/iOS WebView, SplashScreen, Local & Push Notifications ayarları
+├── codemagic.yaml                             ← Codemagic iOS (.ipa) derleme (imzasız + imzalı App Store/TestFlight/Ad-Hoc)
 ├── .github/workflows/
 │   ├── build-android-apk.yml                  ← Yalnızca Android (.apk) derleme + splash.gif Android ikonları
 │   └── build-ios-ipa.yml                      ← Yalnızca iOS (.ipa) derleme + splash.gif 1024×1024 iOS ikonu
@@ -38,7 +39,17 @@ AviaDoX-Android-iOS-Paketi/
 
 ---
 
-## Yöntem 1: GitHub Actions ile Ayrı .apk ve .ipa Üretme (Önerilen — Mac Gerekmez)
+## Yöntem 1: Codemagic ile iOS (.ipa) Derleme (Önerilen — Mac Gerekmez)
+
+ZIP paketinin kök dizinindeki **`codemagic.yaml`** dosyası Codemagic tarafından otomatik tanınır ve `www/splash.gif` ikonunu, `Info.plist` arka plan konum izinlerini, `AppDelegate.swift` dosyasını ve çevrimdışı Supabase paketini otomatik uygular:
+
+1. ZIP paketini GitHub/GitLab deponuzun kök dizinine yükleyin ve Codemagic panelinden deponuzu bağlayın.
+2. **İmzasız `.ipa` (hemen çalışır — Apple hesabı gerekmez):** Codemagic'te **Start new build → `AviaDoX iOS (.ipa) — İmzasız` (`ios-ipa-unsigned`)** seçin; bitince `AviaDoX-unsigned.ipa` dosyasını indirin.
+3. **İmzalı `.ipa` (TestFlight / App Store / Ad-Hoc):** Codemagic → **Environment variables** altında `ios_signing` grubuna `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_IDENTIFIER`, `APP_STORE_CONNECT_PRIVATE_KEY` ve `CERTIFICATE_PRIVATE_KEY` değerlerini ekleyip **`AviaDoX iOS (.ipa) — İmzalı`** (`ios-ipa-signed`) akışını başlatın (Ad-Hoc için `SIGNING_TYPE: IOS_APP_ADHOC` yapabilirsiniz).
+
+---
+
+## Yöntem 2: GitHub Actions ile Ayrı .apk ve .ipa Üretme
 
 Android ve iOS derlemeleri birbirinden tamamen bağımsız **iki ayrı iş akışı dosyasına** ayrılmıştır:
 
