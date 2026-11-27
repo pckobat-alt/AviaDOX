@@ -17,6 +17,9 @@ const AVNOTIF = (() => {
     REMINDER_MAX: 9199,
   };
 
+  const SLOT_CHANNEL_ID = "aviadox_slot_v2";
+  const SLOT_SOUND = "aviadox_slot.wav";
+
   const CHANNELS = [
     {
       id: "aviadox_gpx",
@@ -44,11 +47,12 @@ const AVNOTIF = (() => {
       vibration: true,
     },
     {
-      id: "aviadox_slot",
-      name: "Slot Merkezi ve Duyurular",
-      description: "Slot kararı güncellemeleri ve diğer uygulama bildirimleri",
+      id: SLOT_CHANNEL_ID,
+      name: "Slot Merkezi Bildirimleri",
+      description: "Slot kararı güncellemeleri (özel AviaDoX bildirim sesi)",
       importance: 4,
       visibility: 1,
+      sound: SLOT_SOUND,
       vibration: true,
     },
   ];
@@ -99,6 +103,12 @@ const AVNOTIF = (() => {
     const ln = LN();
     if (!ln || typeof ln.createChannel !== "function") return;
     state.channelsDone = true;
+    // Android 8+: eski varsayılan sesli Slot kanalını temizle, yeni özel sesli aviadox_slot_v2 kanalını aç
+    if (typeof ln.deleteChannel === "function") {
+      try {
+        await ln.deleteChannel({ id: "aviadox_slot" });
+      } catch (_) {}
+    }
     for (const ch of CHANNELS) {
       try {
         await ln.createChannel(ch);
@@ -366,7 +376,14 @@ const AVNOTIF = (() => {
     }
   }
 
-  /* ---------- 2b. Slot Merkezi Durum Değişikliği / Test Bildirimi (ID: 9003) ---------- */
+  /* ---------- 2b. Slot Merkezi Durum Değişikliği / Test Bildirimi (ID: 9003 — Özel AviaDoX Sesi) ---------- */
+  function playWebSlotSound() {
+    try {
+      const a = new Audio("sounds/" + SLOT_SOUND);
+      a.play().catch(() => {});
+    } catch (_) {}
+  }
+
   async function showSlotAlert(title, body, askPerm) {
     const ok = await ensureLocalPermission(!!askPerm);
     if (!ok) return false;
@@ -382,7 +399,8 @@ const AVNOTIF = (() => {
               id: IDS.SLOT,
               title: ttl,
               body: msg,
-              channelId: "aviadox_slot",
+              channelId: SLOT_CHANNEL_ID,
+              sound: SLOT_SOUND,
               threadIdentifier: "aviadox-slot",
               extra: { tab: "sm", type: "slot" },
             },
@@ -396,6 +414,7 @@ const AVNOTIF = (() => {
 
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       try {
+        playWebSlotSound();
         if ("serviceWorker" in navigator) {
           const reg = await navigator.serviceWorker.getRegistration();
           if (reg && typeof reg.showNotification === "function") {

@@ -1,6 +1,6 @@
 // Önce ağ, olmazsa önbellek: uygulama dosyaları güncellenince hemen yenisi gelir, çevrimdışıyken açılır.
 // Supabase API ve harita karoları önbelleğe alınmaz (her zaman ağdan).
-const V = "aviadox-v7";
+const V = "aviadox-v8";
 const SHELL = [
   "./",
   "index.html",
@@ -12,6 +12,7 @@ const SHELL = [
   "app.js",
   "flightlog.js",
   "simulator.html",
+  "sounds/aviadox_slot.wav",
   "weather.js",
   "slot.js",
   "i18n.js",

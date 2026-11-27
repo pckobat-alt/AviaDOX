@@ -4,6 +4,10 @@
   "private": true,
   "description": "AviaDoX — Android (.apk) ve iOS (.ipa) Capacitor 6 projesi (arka plan GPX, kilit ekranı bildirimi, çevrimdışı mod ve GIF açılış logosu)",
   "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "build": "npm run prepare:web",
+    "lint": "node -e \"const fs=require('fs'),cp=require('child_process');for(const f of fs.readdirSync('www'))if(f.endsWith('.js'))cp.execFileSync(process.execPath,['--check','www/'+f]);console.log('www JS syntax OK');\"",
     "prepare:web": "node -e \"const fs=require('fs'); const src='node_modules/@supabase/supabase-js/dist/umd/supabase.js'; if(!fs.existsSync(src)) throw new Error('Supabase UMD bulunamadi: '+src); fs.mkdirSync('www/vendor',{recursive:true}); fs.copyFileSync(src,'www/vendor/supabase.umd.js'); const sz=fs.statSync('www/vendor/supabase.umd.js').size; if(sz<10000) throw new Error('Supabase UMD bos'); console.log('Supabase UMD kopyalandi -> www/vendor/supabase.umd.js ('+sz+' bayt)');\"",
     "cap:sync": "npm run prepare:web && npx cap sync",
     "cap:android": "npm run prepare:web && npx cap sync android && npx cap open android",

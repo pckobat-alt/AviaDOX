@@ -1,36 +1,36 @@
 # ==============================================================================
-# AviaDoX — Codemagic iOS (.ipa) Derleme Yapılandırması (codemagic.yaml)
+# AviaDoX — Codemagic iOS (.ipa) + Android (.apk) Derleme Yapılandırması
 #
-# Bu dosyayı GitHub / GitLab / Bitbucket deponuzun KÖK dizinine koyun.
-# Codemagic panelinde deponuzu seçtiğinizde iki iş akışı hazır görünür:
+# Bu dosya deponuzun KÖK dizinindedir. Codemagic panelinde deponuzu
+# seçtiğinizde üç iş akışı hazır görünür:
 #
 #   1) ios-ipa-unsigned  → Apple Developer hesabı gerekmeden hemen çalışır;
 #                          imzasız AviaDoX-unsigned.ipa üretir (AltStore /
 #                          Sideloadly / kendi sertifikanızla imzalama için).
 #
 #   2) ios-ipa-signed    → App Store Connect API anahtarlarınızı Codemagic
-#                          Environment Variables bölümüne eklediğinizde
-#                          imzalı .ipa üretir (TestFlight / App Store / Ad-Hoc).
-#                          Gerekli değişkenler (grup adı: ios_signing):
-#                            - APP_STORE_CONNECT_ISSUER_ID
-#                            - APP_STORE_CONNECT_KEY_IDENTIFIER
-#                            - APP_STORE_CONNECT_PRIVATE_KEY
-#                            - CERTIFICATE_PRIVATE_KEY
+#                          Environment Variables ("ios_signing") grubuna
+#                          eklediğinizde imzalı .ipa üretir (TestFlight /
+#                          App Store / Ad-Hoc).
+#
+#   3) android-apk       → Android (.apk) dosyasını özel Slot bildirim sesi
+#                          (aviadox_slot.wav), splash.gif ikonları ve arka plan
+#                          GPX izinleriyle tek tıkla üretir.
 # ==============================================================================
 
 definitions:
   scripts:
     - &prepare_ios_project
-      name: Bağımlılıkları kur, iOS projesini hazırla ve Info.plist / AppIcon uygula
+      name: Bağımlılıkları kur, iOS projesini, özel bildirim sesini, Info.plist ve AppIcon'u hazırla
       script: |
         set -euo pipefail
 
-        echo "==> 1/5: npm install ve çevrimdışı Supabase paketi hazırlanıyor..."
+        echo "==> 1/6: npm install ve çevrimdışı Supabase paketi hazırlanıyor..."
         npm install
         npm run prepare:web
         test -s www/vendor/supabase.umd.js
 
-        echo "==> 2/5: Capacitor iOS projesi oluşturuluyor ve senkronize ediliyor..."
+        echo "==> 2/6: Capacitor iOS projesi oluşturuluyor ve senkronize ediliyor..."
         if [ ! -d "ios" ]; then
           npx cap add ios
         fi
@@ -43,7 +43,54 @@ definitions:
           (cd ios/App && pod install)
         fi
 
-        echo "==> 3/5: Info.plist arka plan konum, bildirim ve Live Activities ayarları uygulanıyor..."
+        echo "==> 3/6: Özel Slot Merkezi bildirim sesi (aviadox_slot.wav) Xcode App bundle'ına ekleniyor..."
+        if [ -f "www/sounds/aviadox_slot.wav" ]; then
+          cp www/sounds/aviadox_slot.wav ios/App/App/aviadox_slot.wav
+          python3 - <<'PY'
+        import re
+        pbx_path = "ios/App/App.xcodeproj/project.pbxproj"
+        with open(pbx_path, "r", encoding="utf-8") as f:
+            txt = f.read()
+
+        if "aviadox_slot.wav" not in txt:
+            build_id = "A7B1C2D3E4F5061728394A01"
+            ref_id = "A7B1C2D3E4F5061728394A02"
+
+            txt, n1 = re.subn(
+                r"(/\* Begin PBXBuildFile section \*/\n)",
+                rf"\1\t\t{build_id} /* aviadox_slot.wav in Resources */ = {{isa = PBXBuildFile; fileRef = {ref_id} /* aviadox_slot.wav */; }};\n",
+                txt,
+                count=1,
+            )
+            txt, n2 = re.subn(
+                r"(/\* Begin PBXFileReference section \*/\n)",
+                rf'\1\t\t{ref_id} /* aviadox_slot.wav */ = {{isa = PBXFileReference; lastKnownFileType = audio.wav; path = aviadox_slot.wav; sourceTree = "<group>"; }};\n',
+                txt,
+                count=1,
+            )
+            txt, n3 = re.subn(
+                r"(/\* App \*/ = \{\n\s*isa = PBXGroup;\n\s*children = \(\n)",
+                rf"\1\t\t\t\t{ref_id} /* aviadox_slot.wav */,\n",
+                txt,
+                count=1,
+            )
+            txt, n4 = re.subn(
+                r"(/\* Begin PBXResourcesBuildPhase section \*/[\s\S]*?files = \(\n)",
+                rf"\1\t\t\t\t{build_id} /* aviadox_slot.wav in Resources */,\n",
+                txt,
+                count=1,
+            )
+            if not (n1 == 1 and n2 == 1 and n3 == 1 and n4 == 1):
+                raise RuntimeError(f"project.pbxproj guncellenemedi: {(n1, n2, n3, n4)}")
+            with open(pbx_path, "w", encoding="utf-8") as f:
+                f.write(txt)
+            print("aviadox_slot.wav Xcode Copy Bundle Resources icine kaydedildi.")
+        else:
+            print("aviadox_slot.wav zaten project.pbxproj icinde kayitli.")
+        PY
+        fi
+
+        echo "==> 4/6: Info.plist arka plan konum, bildirim ve Live Activities ayarları uygulanıyor..."
         python3 - <<'PY'
         import plistlib
         plist_path = "ios/App/App/Info.plist"
@@ -69,7 +116,7 @@ definitions:
         print("Info.plist guncellendi.")
         PY
 
-        echo "==> 4/5: www/splash.gif dosyasından 1024x1024 opak iOS uygulama ikonu üretiliyor..."
+        echo "==> 5/6: www/splash.gif dosyasından 1024x1024 opak iOS uygulama ikonu üretiliyor..."
         if [ -f "www/splash.gif" ]; then
           swift - <<'SWIFT'
         import Foundation
@@ -180,7 +227,7 @@ definitions:
         SWIFT
         fi
 
-        echo "==> 5/5: iOS projesi derlemeye hazır."
+        echo "==> 6/6: iOS projesi derlemeye hazır."
 
 workflows:
   # ----------------------------------------------------------------------------
@@ -214,6 +261,7 @@ workflows:
             CODE_SIGN_IDENTITY="" \
             -archivePath build/AviaDoX.xcarchive \
             archive
+          test -s build/AviaDoX.xcarchive/Products/Applications/App.app/aviadox_slot.wav
           cp -r build/AviaDoX.xcarchive/Products/Applications/App.app build/Payload/
           (cd build && zip -r ios/ipa/AviaDoX-unsigned.ipa Payload)
           ls -lh build/ios/ipa/AviaDoX-unsigned.ipa
@@ -269,3 +317,156 @@ workflows:
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
+
+  # ----------------------------------------------------------------------------
+  # 3) ANDROID .APK — Özel Slot bildirim sesi + splash.gif ikonları + GPX izinleri
+  # ----------------------------------------------------------------------------
+  android-apk:
+    name: AviaDoX Android (.apk)
+    instance_type: linux_x2
+    max_build_duration: 60
+    environment:
+      node: 20
+      java: 17
+      vars:
+        ORG_GRADLE_PROJECT_jvmargs: "-Xmx4g -Dfile.encoding=UTF-8"
+    scripts:
+      - name: Bağımlılıkları kur ve çevrimdışı Supabase paketini hazırla
+        script: |
+          set -euo pipefail
+          npm install
+          npm run prepare:web
+          test -s www/vendor/supabase.umd.js
+      - name: Android projesini oluştur ve senkronize et
+        script: |
+          set -euo pipefail
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+      - name: Özel Slot bildirim sesi, bildirim ikonu ve AndroidManifest kurallarını uygula
+        script: |
+          set -euo pipefail
+          SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -n "$SDK_DIR" ]; then
+            echo "sdk.dir=$SDK_DIR" > android/local.properties
+          fi
+
+          if [ -f "www/sounds/aviadox_slot.wav" ]; then
+            mkdir -p android/app/src/main/res/raw
+            cp www/sounds/aviadox_slot.wav android/app/src/main/res/raw/aviadox_slot.wav
+            test -s android/app/src/main/res/raw/aviadox_slot.wav
+            echo "aviadox_slot.wav -> android/app/src/main/res/raw/aviadox_slot.wav kopyalandi."
+          fi
+
+          node -e '
+            const fs = require("fs");
+            fs.mkdirSync("android/app/src/main/res/drawable", { recursive: true });
+            const iconXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
+                android:width="24dp"
+                android:height="24dp"
+                android:viewportWidth="24"
+                android:viewportHeight="24"
+                android:tint="#FFFFFF">
+                <path
+                    android:fillColor="#FFFFFFFF"
+                    android:pathData="M12,2C7.58,2 4,5.58 4,10c0,3.54 2.29,6.53 5.47,7.59L10.5,20h3l1.03,-2.41C17.71,16.53 20,13.54 20,10c0,-4.42 -3.58,-8 -8,-8zM10,21h4v1.5c0,0.28 -0.22,0.5 -0.5,0.5h-3c-0.28,0 -0.5,-0.22 -0.5,-0.5V21z"/>
+            </vector>\n`;
+            fs.writeFileSync("android/app/src/main/res/drawable/ic_stat_aviadox.xml", iconXml, "utf8");
+
+            const p = "android/app/src/main/AndroidManifest.xml";
+            let xml = fs.readFileSync(p, "utf8");
+            if (!xml.includes("xmlns:tools=")) {
+              xml = xml.replace("<manifest ", `<manifest xmlns:tools="http://schemas.android.com/tools" `);
+            }
+            const perms = [
+              "android.permission.INTERNET",
+              "android.permission.ACCESS_NETWORK_STATE",
+              "android.permission.ACCESS_COARSE_LOCATION",
+              "android.permission.ACCESS_FINE_LOCATION",
+              "android.permission.ACCESS_BACKGROUND_LOCATION",
+              "android.permission.FOREGROUND_SERVICE",
+              "android.permission.FOREGROUND_SERVICE_LOCATION",
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.WAKE_LOCK"
+            ];
+            for (const perm of perms) {
+              if (!xml.includes(perm)) {
+                xml = xml.replace("<application", `    <uses-permission android:name="${perm}" />\n    <application`);
+              }
+            }
+            if (!xml.includes("BackgroundGeolocationService")) {
+              const svc = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:node="merge" tools:replace="android:exported" />\n`;
+              xml = xml.replace("</application>", svc + "    </application>");
+            }
+            fs.writeFileSync(p, xml, "utf8");
+            console.log("AndroidManifest.xml ve ic_stat_aviadox.xml hazirlandi.");
+          '
+      - name: www/splash.gif dosyasından Android uygulama ikonlarını üret
+        script: |
+          set -euo pipefail
+          if [ -f "www/splash.gif" ]; then
+            python3 -c "import PIL" 2>/dev/null || python3 -m pip install --quiet pillow
+            python3 - <<'PY'
+          import os
+          from PIL import Image, ImageDraw
+
+          im = Image.open("www/splash.gif")
+          im.seek(0)
+          frame = im.convert("RGBA")
+          px = frame.getpixel((0, 0))
+          bg_rgb = px[:3] if px[3] >= 128 else (11, 25, 41)
+          bg_hex = "#%02X%02X%02X" % bg_rgb
+
+          def make_icon(size, scale, opaque=True, circle=False):
+              base = Image.new("RGBA", (size, size), bg_rgb + (255,) if opaque else (0, 0, 0, 0))
+              target = max(1, int(round(size * scale)))
+              ratio = min(target / frame.width, target / frame.height)
+              nw = max(1, int(round(frame.width * ratio)))
+              nh = max(1, int(round(frame.height * ratio)))
+              resized = frame.resize((nw, nh), Image.Resampling.LANCZOS)
+              ox = (size - nw) // 2
+              oy = (size - nh) // 2
+              base.paste(resized, (ox, oy), resized)
+              if circle:
+                  mask = Image.new("L", (size, size), 0)
+                  ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+                  out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                  out.paste(base, (0, 0), mask)
+                  return out
+              return base.convert("RGB") if opaque else base
+
+          res_root = "android/app/src/main/res"
+          densities = [
+              ("mipmap-mdpi", 48, 108),
+              ("mipmap-hdpi", 72, 162),
+              ("mipmap-xhdpi", 96, 216),
+              ("mipmap-xxhdpi", 144, 324),
+              ("mipmap-xxxhdpi", 192, 432),
+          ]
+          for folder, sz, fg_sz in densities:
+              d = os.path.join(res_root, folder)
+              os.makedirs(d, exist_ok=True)
+              make_icon(sz, 0.86, opaque=True, circle=False).save(os.path.join(d, "ic_launcher.png"), "PNG")
+              make_icon(sz, 0.84, opaque=True, circle=True).save(os.path.join(d, "ic_launcher_round.png"), "PNG")
+              make_icon(fg_sz, 0.62, opaque=False, circle=False).save(os.path.join(d, "ic_launcher_foreground.png"), "PNG")
+
+          vals_dir = os.path.join(res_root, "values")
+          os.makedirs(vals_dir, exist_ok=True)
+          with open(os.path.join(vals_dir, "ic_launcher_background.xml"), "w", encoding="utf-8") as f:
+              f.write(f'<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">{bg_hex}</color>\n</resources>\n')
+          print(f"Android uygulama ikonlari www/splash.gif dosyasindan uretildi (arka plan: {bg_hex}).")
+          PY
+          fi
+      - name: Android Debug APK derle
+        script: |
+          set -euo pipefail
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          mkdir -p ../build/android/apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../build/android/apk/AviaDoX-Android.apk
+          ls -lh ../build/android/apk/AviaDoX-Android.apk
+    artifacts:
+      - build/android/apk/*.apk
+      - android/app/build/outputs/apk/debug/*.apk

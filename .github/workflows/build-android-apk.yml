@@ -49,6 +49,10 @@ jobs:
           if [ -n "$SDK_DIR" ]; then
             echo "sdk.dir=$SDK_DIR" > android/local.properties
           fi
+          if [ -f "www/sounds/aviadox_slot.wav" ]; then
+            mkdir -p android/app/src/main/res/raw
+            cp www/sounds/aviadox_slot.wav android/app/src/main/res/raw/aviadox_slot.wav
+          fi
           node -e '
             const fs = require("fs");
             fs.mkdirSync("android/app/src/main/res/drawable", { recursive: true });

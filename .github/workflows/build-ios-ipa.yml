@@ -40,6 +40,27 @@ jobs:
           fi
           npx cap sync ios
 
+          if [ -f "www/sounds/aviadox_slot.wav" ]; then
+            cp www/sounds/aviadox_slot.wav ios/App/App/aviadox_slot.wav
+            python3 - <<'PY'
+          import re
+          pbx_path = "ios/App/App.xcodeproj/project.pbxproj"
+          with open(pbx_path, "r", encoding="utf-8") as f:
+              txt = f.read()
+          if "aviadox_slot.wav" not in txt:
+              build_id = "A7B1C2D3E4F5061728394A01"
+              ref_id = "A7B1C2D3E4F5061728394A02"
+              txt, n1 = re.subn(r"(/\* Begin PBXBuildFile section \*/\n)", rf"\1\t\t{build_id} /* aviadox_slot.wav in Resources */ = {{isa = PBXBuildFile; fileRef = {ref_id} /* aviadox_slot.wav */; }};\n", txt, count=1)
+              txt, n2 = re.subn(r"(/\* Begin PBXFileReference section \*/\n)", rf'\1\t\t{ref_id} /* aviadox_slot.wav */ = {{isa = PBXFileReference; lastKnownFileType = audio.wav; path = aviadox_slot.wav; sourceTree = "<group>"; }};\n', txt, count=1)
+              txt, n3 = re.subn(r"(/\* App \*/ = \{\n\s*isa = PBXGroup;\n\s*children = \(\n)", rf"\1\t\t\t\t{ref_id} /* aviadox_slot.wav */,\n", txt, count=1)
+              txt, n4 = re.subn(r"(/\* Begin PBXResourcesBuildPhase section \*/[\s\S]*?files = \(\n)", rf"\1\t\t\t\t{build_id} /* aviadox_slot.wav in Resources */,\n", txt, count=1)
+              if not (n1 == 1 and n2 == 1 and n3 == 1 and n4 == 1):
+                  raise RuntimeError(f"project.pbxproj guncellenemedi: {(n1, n2, n3, n4)}")
+              with open(pbx_path, "w", encoding="utf-8") as f:
+                  f.write(txt)
+          PY
+          fi
+
           python3 - <<'PY'
           import plistlib
           plist_path = "ios/App/App/Info.plist"
