@@ -156,13 +156,6 @@
           <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" d="M15 19l-7-7 7-7"/></svg>
           <span>Geri</span>
         </button>
-
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/20 shrink-0">
-          <!-- Sıcak Hava Balonu SVG İkonu -->
-          <svg class="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2C7.58 2 4 5.58 4 10c0 3.31 2.19 6.65 4.62 9.15.32.33.76.52 1.22.52h4.32c.46 0 .9-.19 1.22-.52C17.81 16.65 20 13.31 20 10c0-4.42-3.58-8-8-8zm-1.5 19h3v1.5c0 .28-.22.5-.5.5h-2c-.28 0-.5-.22-.5-.5V21z"/>
-          </svg>
-        </div>
         <div class="min-w-0">
           <div class="flex items-center gap-2">
             <h1 class="text-base sm:text-lg font-bold tracking-tight text-white truncate">AviaDoX uçuş izle</h1>
@@ -1766,7 +1759,7 @@
       const dateStr = startPt ? startPt.time.toLocaleDateString('tr-TR') : '';
 
       document.getElementById('flightTitleSubtitle').textContent =
-        [state.fileName, state.pilotName, dateStr].filter(Boolean).join(' • ');
+        [state.pilotName].filter(Boolean).join(' • ');
       document.getElementById('modalFileName').textContent = state.fileName;
       document.getElementById('legendMinAlt').textContent = `${Math.round(s.minAlt)}m`;
       document.getElementById('legendMaxAlt').textContent = `${Math.round(s.maxAlt)}m`;
@@ -1979,7 +1972,7 @@
           window.parent.postMessage({ type: 'AVIADOX_SIM_READY' }, '*');
         } catch (_) {}
       } else {
-        document.getElementById('flightTitleSubtitle').textContent = 'GPX dosyası seçmek için "Yeni GPX Yükle" düğmesini kullanın';
+        document.getElementById('flightTitleSubtitle').textContent = 'Yeni GPX dosyası için "GPX Yükle"';
       }
 
       rafId = requestAnimationFrame(animationLoop);
