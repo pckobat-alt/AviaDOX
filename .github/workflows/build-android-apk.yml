@@ -1,0 +1,164 @@
+name: AviaDoX Android (.apk) Derleme
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'www/**'
+      - 'android-config/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - '.github/workflows/build-android-apk.yml'
+
+jobs:
+  build-android-apk:
+    name: Android APK Derle (Ubuntu + Gradle)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Depoyu indir
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Java 17 (Temurin) kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Bağımlılıkları kur ve çevrimdışı Supabase paketini hazırla
+        run: |
+          npm install
+          npm run prepare:web
+          test -s www/vendor/supabase.umd.js
+
+      - name: Android projesini oluştur ve senkronize et
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Android SDK yolu, bildirim ikonu ve Manifest birleştirme kurallarını uygula
+        run: |
+          SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -n "$SDK_DIR" ]; then
+            echo "sdk.dir=$SDK_DIR" > android/local.properties
+          fi
+          node -e '
+            const fs = require("fs");
+            fs.mkdirSync("android/app/src/main/res/drawable", { recursive: true });
+            const iconXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
+                android:width="24dp"
+                android:height="24dp"
+                android:viewportWidth="24"
+                android:viewportHeight="24"
+                android:tint="#FFFFFF">
+                <path
+                    android:fillColor="#FFFFFFFF"
+                    android:pathData="M12,2C7.58,2 4,5.58 4,10c0,3.54 2.29,6.53 5.47,7.59L10.5,20h3l1.03,-2.41C17.71,16.53 20,13.54 20,10c0,-4.42 -3.58,-8 -8,-8zM10,21h4v1.5c0,0.28 -0.22,0.5 -0.5,0.5h-3c-0.28,0 -0.5,-0.22 -0.5,-0.5V21z"/>
+            </vector>\n`;
+            fs.writeFileSync("android/app/src/main/res/drawable/ic_stat_aviadox.xml", iconXml, "utf8");
+
+            const p = "android/app/src/main/AndroidManifest.xml";
+            let xml = fs.readFileSync(p, "utf8");
+            if (!xml.includes("xmlns:tools=")) {
+              xml = xml.replace("<manifest ", `<manifest xmlns:tools="http://schemas.android.com/tools" `);
+            }
+            const perms = [
+              "android.permission.INTERNET",
+              "android.permission.ACCESS_NETWORK_STATE",
+              "android.permission.ACCESS_COARSE_LOCATION",
+              "android.permission.ACCESS_FINE_LOCATION",
+              "android.permission.ACCESS_BACKGROUND_LOCATION",
+              "android.permission.FOREGROUND_SERVICE",
+              "android.permission.FOREGROUND_SERVICE_LOCATION",
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.WAKE_LOCK"
+            ];
+            for (const perm of perms) {
+              if (!xml.includes(perm)) {
+                xml = xml.replace("<application", `    <uses-permission android:name="${perm}" />\n    <application`);
+              }
+            }
+            if (!xml.includes("BackgroundGeolocationService")) {
+              const svc = `        <service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="false" android:foregroundServiceType="location" tools:node="merge" tools:replace="android:exported" />\n`;
+              xml = xml.replace("</application>", svc + "    </application>");
+            }
+            fs.writeFileSync(p, xml, "utf8");
+            console.log("AndroidManifest.xml ve ic_stat_aviadox.xml hazirlandi.");
+          '
+
+      - name: www/splash.gif dosyasından Android uygulama ikonlarını üret
+        run: |
+          if [ -f "www/splash.gif" ]; then
+            python3 -c "import PIL" 2>/dev/null || python3 -m pip install --quiet pillow
+            python3 - <<'PY'
+          import os
+          from PIL import Image, ImageDraw
+
+          im = Image.open("www/splash.gif")
+          im.seek(0)
+          frame = im.convert("RGBA")
+          px = frame.getpixel((0, 0))
+          bg_rgb = px[:3] if px[3] >= 128 else (11, 25, 41)
+          bg_hex = "#%02X%02X%02X" % bg_rgb
+
+          def make_icon(size, scale, opaque=True, circle=False):
+              base = Image.new("RGBA", (size, size), bg_rgb + (255,) if opaque else (0, 0, 0, 0))
+              target = max(1, int(round(size * scale)))
+              ratio = min(target / frame.width, target / frame.height)
+              nw = max(1, int(round(frame.width * ratio)))
+              nh = max(1, int(round(frame.height * ratio)))
+              resized = frame.resize((nw, nh), Image.Resampling.LANCZOS)
+              ox = (size - nw) // 2
+              oy = (size - nh) // 2
+              base.paste(resized, (ox, oy), resized)
+              if circle:
+                  mask = Image.new("L", (size, size), 0)
+                  ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+                  out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                  out.paste(base, (0, 0), mask)
+                  return out
+              return base.convert("RGB") if opaque else base
+
+          res_root = "android/app/src/main/res"
+          densities = [
+              ("mipmap-mdpi", 48, 108),
+              ("mipmap-hdpi", 72, 162),
+              ("mipmap-xhdpi", 96, 216),
+              ("mipmap-xxhdpi", 144, 324),
+              ("mipmap-xxxhdpi", 192, 432),
+          ]
+          for folder, sz, fg_sz in densities:
+              d = os.path.join(res_root, folder)
+              os.makedirs(d, exist_ok=True)
+              make_icon(sz, 0.86, opaque=True, circle=False).save(os.path.join(d, "ic_launcher.png"), "PNG")
+              make_icon(sz, 0.84, opaque=True, circle=True).save(os.path.join(d, "ic_launcher_round.png"), "PNG")
+              make_icon(fg_sz, 0.62, opaque=False, circle=False).save(os.path.join(d, "ic_launcher_foreground.png"), "PNG")
+
+          vals_dir = os.path.join(res_root, "values")
+          os.makedirs(vals_dir, exist_ok=True)
+          with open(os.path.join(vals_dir, "ic_launcher_background.xml"), "w", encoding="utf-8") as f:
+              f.write(f'<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">{bg_hex}</color>\n</resources>\n')
+          print(f"Android uygulama ikonlari www/splash.gif dosyasindan uretildi (arka plan: {bg_hex}).")
+          PY
+          fi
+
+      - name: Android Debug APK derle
+        working-directory: ./android
+        env:
+          ORG_GRADLE_PROJECT_jvmargs: "-Xmx4g -Dfile.encoding=UTF-8"
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Android APK dosyasını artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: AviaDoX-Android-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
