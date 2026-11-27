@@ -956,7 +956,7 @@ function render() {
     S.tab = "sm";
     try { history.replaceState(null, "", location.pathname + location.search); } catch (_) {}
   }
-  if (typeof SLOT !== "undefined" && !isCamo() && !S.offline && !S.offlineGuest) SLOT.start();
+  if (typeof SLOT !== "undefined" && !isCamo()) SLOT.start();
   if (S.tab === "pl" && !canEditSched()) S.tab = "dash";
   if (isCamo() && !["cm", "ak"].includes(S.tab)) S.tab = "cm";
   if (S.offlineGuest && !["fl", "wx", "ak"].includes(S.tab)) S.tab = "fl";
@@ -1447,12 +1447,92 @@ async function rejectJ(id) {
   const { error } = await sb.rpc("reject_join", { req: id }); if (error) throw error;
   S.joins = S.joins.filter(x => x.id !== id); render(); toast("Başvuru reddedildi");
 }
+const SLOT_CFG_STORAGE_KEY = "aviadox-slot-cfg-v1";
+function getSlotSettings() {
+  if (typeof SLOT !== "undefined" && typeof SLOT.getConfig === "function") {
+    return SLOT.getConfig();
+  }
+  const def = { enabled: true, intervalMin: 2, preSunriseMin: 45, stopAfter: "08:00" };
+  try {
+    const raw = JSON.parse(localStorage.getItem(SLOT_CFG_STORAGE_KEY) || "null");
+    if (!raw || typeof raw !== "object") return def;
+    const stopOk = /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(raw.stopAfter || "").trim());
+    return {
+      enabled: raw.enabled !== false,
+      intervalMin: Math.max(1, Math.min(30, Math.round(Number(raw.intervalMin) || 2))),
+      preSunriseMin: Math.max(0, Math.min(180, Math.round(raw.preSunriseMin == null || raw.preSunriseMin === "" ? 45 : Number(raw.preSunriseMin)))),
+      stopAfter: stopOk ? String(raw.stopAfter).trim().padStart(5, "0") : "08:00",
+    };
+  } catch (_) {
+    return def;
+  }
+}
+function slotSettingsCard() {
+  const c = getSlotSettings();
+  const hasSlot = typeof SLOT !== "undefined";
+  const statusHtml = hasSlot && typeof SLOT.scheduleStatusLine === "function"
+    ? SLOT.scheduleStatusLine()
+    : (c.enabled
+      ? `🟢 Otomatik kontrol aktif · Gün doğumundan ${c.preSunriseMin} dk önce başlar, her ${c.intervalMin} dk kontrol eder (${esc(c.stopAfter)} sonrası tüm bölgeler Uçulmaz olunca durur)`
+      : "⚪ Otomatik Slot kontrolü kapalı");
+  const notifOn = hasSlot && typeof SLOT.isNotifOn === "function" && SLOT.isNotifOn();
+  return `<div class="card" id="slot-cfg-card"><b>🚩 Slot Merkezi Kontrol Ayarları</b>
+<div class="mu" style="margin:4px 0 10px">Kapadokya gün doğumundan önce belirlediğiniz dakikada başlar, seçtiğiniz sıklıkta doğrudan kontrol eder ve bitiş saatinden sonra tüm bölgeler Uçulmaz olunca durur.</div>
+<label style="display:flex;align-items:center;gap:10px;font-size:15px;font-weight:600;margin-bottom:10px;cursor:pointer">
+  <input id="sl-en" type="checkbox" ${c.enabled ? "checked" : ""} style="width:auto;margin:0;padding:0;transform:scale(1.2)">
+  <span>Otomatik Slot kontrolü açık</span>
+</label>
+<div class="grid" style="margin-bottom:4px">
+  <div><label class="mu" for="sl-int">Kontrol sıklığı (dk)</label><input id="sl-int" type="number" min="1" max="30" inputmode="numeric" value="${c.intervalMin}"></div>
+  <div><label class="mu" for="sl-pre">Gün doğumundan önce (dk)</label><input id="sl-pre" type="number" min="0" max="180" inputmode="numeric" value="${c.preSunriseMin}"></div>
+</div>
+<label class="mu" for="sl-stop">Bitiş kontrol saati (TR — tüm bölgeler Uçulmaz olunca dur)</label>
+<input id="sl-stop" type="time" value="${esc(c.stopAfter)}">
+<div class="mu" style="margin:2px 0 10px;padding:8px 10px;border-radius:8px;background:var(--bg)">${statusHtml}</div>
+<button onclick="saveSlotSettings()">Kaydet</button>
+${hasSlot ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
+  <button class="sec" style="flex:1;min-width:140px" onclick="run(toggleSlotNotif)">${notifOn ? "🔕 Bildirimleri Kapat" : "🔔 Bildirimleri Aç"}</button>
+  <button class="sec" style="flex:1;min-width:140px" onclick="SLOT.testNotif()">🔔 Test Bildirimi</button>
+  <button class="sec" style="flex:1;min-width:140px" onclick="SLOT.refresh()">↻ Şimdi Kontrol Et</button>
+</div>` : ""}
+</div>`;
+}
+function saveSlotSettings() {
+  const enEl = document.getElementById("sl-en");
+  const intEl = document.getElementById("sl-int");
+  const preEl = document.getElementById("sl-pre");
+  const stopEl = document.getElementById("sl-stop");
+  if (!enEl || !intEl || !preEl || !stopEl) return;
+  const next = {
+    enabled: !!enEl.checked,
+    intervalMin: Math.max(1, Math.min(30, Math.round(Number(intEl.value) || 2))),
+    preSunriseMin: Math.max(0, Math.min(180, Math.round(preEl.value === "" ? 45 : Number(preEl.value)))),
+    stopAfter: /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(stopEl.value || "").trim()) ? String(stopEl.value).trim().padStart(5, "0") : "08:00",
+  };
+  if (typeof SLOT !== "undefined" && typeof SLOT.saveCfg === "function") {
+    SLOT.saveCfg(next);
+    if (next.enabled && typeof SLOT.windowState === "function" && SLOT.windowState(Date.now()).phase === "active") {
+      SLOT.refresh().catch(() => {});
+    }
+  } else {
+    try { localStorage.setItem(SLOT_CFG_STORAGE_KEY, JSON.stringify(next)); } catch (_) {}
+  }
+  render();
+  toast(next.enabled ? `Slot kontrolü kaydedildi (her ${next.intervalMin} dk · gün doğumu − ${next.preSunriseMin} dk)` : "Otomatik Slot kontrolü kapatıldı");
+}
+async function toggleSlotNotif() {
+  if (typeof SLOT === "undefined") return;
+  const on = typeof SLOT.isNotifOn === "function" && SLOT.isNotifOn();
+  if (on) await SLOT.off();
+  else await SLOT.on();
+  render();
+}
 function setView() {
   if (S.offlineGuest) {
-    return `<div style="margin-top:14px">${I18N.controls(false)}<div class="card"><b>📡 Çevrimdışı Mod</b><div class="mu" style="margin:6px 0">Şu an internet bağlantısı olmadan yalnızca yerel Flight Log (GPX) kaydı kullanıyorsunuz. İnternet bağlandığında hesabınızla giriş yapabilirsiniz.</div><button onclick="tryReconnect()">↻ Çevrimiçi Girişe Geç</button></div><div class="card"><b>🔒 Gizlilik</b><button class="sec" onclick="privPage(render,'pol')">Gizlilik Politikası</button><button class="sec" onclick="privPage(render,'ayd')">KVKK Aydınlatma Metni</button><button class="sec" onclick="privPage(render,'riza')">Açık Rıza Beyanı</button></div></div>`;
+    return `<div style="margin-top:14px">${I18N.controls(false)}${slotSettingsCard()}<div class="card"><b>📡 Çevrimdışı Mod</b><div class="mu" style="margin:6px 0">Şu an internet bağlantısı olmadan yalnızca yerel Flight Log (GPX) kaydı kullanıyorsunuz. İnternet bağlandığında hesabınızla giriş yapabilirsiniz.</div><button onclick="tryReconnect()">↻ Çevrimiçi Girişe Geç</button></div><div class="card"><b>🔒 Gizlilik</b><button class="sec" onclick="privPage(render,'pol')">Gizlilik Politikası</button><button class="sec" onclick="privPage(render,'ayd')">KVKK Aydınlatma Metni</button><button class="sec" onclick="privPage(render,'riza')">Açık Rıza Beyanı</button></div></div>`;
   }
   const adm = isAdmin(), um = canManageUsers();
-  return `<div style="margin-top:14px">${I18N.controls(false)}<div class="card"><b>📷 Profil fotoğrafım</b><div style="display:flex;align-items:center;gap:14px;margin:10px 0">${avatarBox(84)}<div class="mu">Panelde sadece senin hesabında görünür. Kare kırpılır ve küçültülür.</div></div><input id="av" type="file" accept="image/*"><button onclick="run(setAvatar)">Fotoğrafı yükle</button>${S.avatarUrl ? '<button class="sec" onclick="run(delAvatar)">Fotoğrafı kaldır</button>' : ""}</div>
+  return `<div style="margin-top:14px">${I18N.controls(false)}${slotSettingsCard()}<div class="card"><b>📷 Profil fotoğrafım</b><div style="display:flex;align-items:center;gap:14px;margin:10px 0">${avatarBox(84)}<div class="mu">Panelde sadece senin hesabında görünür. Kare kırpılır ve küçültülür.</div></div><input id="av" type="file" accept="image/*"><button onclick="run(setAvatar)">Fotoğrafı yükle</button>${S.avatarUrl ? '<button class="sec" onclick="run(delAvatar)">Fotoğrafı kaldır</button>' : ""}</div>
 <div class="card"><b>🔑 Parolamı değiştir</b><div style="height:8px"></div>
 <input id="pw1" type="password" placeholder="Yeni parola (en az 8 karakter)" autocomplete="new-password"><input id="pw2" type="password" placeholder="Yeni parola (tekrar)" autocomplete="new-password"><button onclick="run(changePw)">Parolayı değiştir</button></div>
 ${um ? joinCard() + usersCard() : ""}

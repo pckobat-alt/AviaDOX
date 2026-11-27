@@ -163,7 +163,8 @@ const I18N = (() => {
     "MGM Kapadokya airgramı ↗": "MGM Cappadocia airgram ↗", "METAR / TAF (LTAZ)": "METAR / TAF (LTAZ)", "TAF şu an alınamadı": "TAF is not available right now", "Kaynak: Slot Merkezi sayfası (HEZARFEN Rasat)": "Source: Slot Center page (HEZARFEN Rasat)",
     "Kapadokya Slot Merkezi": "Cappadocia Slot Center", "Güncelleme": "Update", "Henüz veri yok": "No data yet", "UÇULABİLİR": "FLYABLE", "UÇULMAZ": "NO FLIGHT", "UÇULMAZ (sarı bayrak)": "NO FLIGHT (yellow flag)",
     "☀️ Kapadokya gün doğumu:": "☀️ Cappadocia sunrise:", "· Başlangıç:": "· Start:", "🟢 Otomatik kontrol aktif (2 dk aralık)": "🟢 Auto-check active (every 2 min)", "⏹ Otomatik kontrol durdu (08:00 sonrası tüm bölgeler Uçulmaz)": "⏹ Auto-check stopped (all regions NO FLIGHT after 08:00)",
-    "Veri bekleniyor… (ilk güncelleme birkaç dakika sürebilir)": "Waiting for data… (the first update may take a few minutes)", "Bildirim": "Notification", "Slot kararı değiştiğinde haber ver": "Notify me when the slot decision changes",
+    "🚩 Slot Merkezi Kontrolü ve Bildirim": "🚩 Slot Center Auto-Check & Notifications", "Otomatik Slot kontrolü açık": "Auto Slot check enabled", "Kontrol süresi (dk)": "Check interval (min)", "Gün doğumundan önce (dk)": "Start before sunrise (min)", "Bitiş kontrol saati (TR — tüm bölgeler Uçulmaz olunca dur)": "Stop check time (TR — stops when all NO FLIGHT)", "🔔 Test Bildirimi": "🔔 Test Notification", "↻ Şimdi Kontrol Et": "↻ Check Now", "⚙️ Süre / Ayarlar": "⚙️ Schedule / Settings", "⚪ Otomatik kontrol kapalı (Ayarlar'dan açılabilir)": "⚪ Auto-check disabled (enable in Settings)",
+    "Veri bekleniyor… (ilk güncelleme birkaç dakika sürebilir)": "Waiting for data… (the first update may take a few minutes)", "Bildirim": "Notification", "Slot kararı değiştiğinde haber ver": "Notify me when the slot decision changes", "Slot kararı değiştiğinde telefon bildirimi gönder": "Send phone notification when slot decision changes",
     "🔔 Bildirimleri aç": "🔔 Enable notifications", "🔕 Bildirimi kapat": "🔕 Turn off notifications", "Bu tarayıcı bildirimi desteklemiyor.": "This browser does not support notifications.", "İzin verilmedi. Tarayıcı/telefon ayarlarından bildirimlere izin ver.": "Permission was not granted. Allow notifications in browser/phone settings.",
     "Bildirim açılamadı:": "Notifications could not be enabled:", "Slot Merkezi bildirimleri açıldı ✔": "Slot Center notifications enabled ✔", "🔔 Slot Merkezi güncellendi": "🔔 Slot Center updated", "Slot Merkezi sayfası ↗": "Slot Center page ↗",
     "Kırmızı/sarı bayrak: kalkış izni verilmez. Yeşilde nihai uçuş kararı pilot ve işletmeye aittir. Bilgi resmî sayfadan otomatik alınır ve gecikebilir; resmî kaynağı esas alın.": "Red/yellow flag: no takeoff clearance. On green, the final flight decision rests with the pilot and operator. Information is fetched automatically from the official page and may be delayed; rely on the official source.",
@@ -202,7 +203,11 @@ const I18N = (() => {
     "Düzenle / ekle": "Edit / add", "🗓 Toplu işaretle (izin / iptal)": "🗓 Bulk mark (leave / cancellation)", "Başlangıç - bitiş tarihi": "Start - end date",
     "Seçililere uygula": "Apply to selected", "🔁 Unvan değiştir (Pilot / Co-Pilot)": "🔁 Change title (Pilot / Co-Pilot)", "uçuş günü (Co-Pilot)": "flight days (Co-Pilot)",
     "Seçiniz": "Select", "✈️ Uçuş saati çizelgesi": "✈️ Flight hours chart", "🕓 Çalışma saati çizelgesi": "🕓 Duty hours chart",
-    "uçuş saati çizelgesi": "flight hours chart", "çalışma saati çizelgesi": "duty hours chart", "Rakamlar o gün girilen saattir.": "Numbers are the hours entered for that day."
+    "uçuş saati çizelgesi": "flight hours chart", "çalışma saati çizelgesi": "duty hours chart", "Rakamlar o gün girilen saattir.": "Numbers are the hours entered for that day.",
+    "🚩 Slot Merkezi Kontrol Ayarları": "🚩 Slot Center Control Settings",
+    "Kontrol sıklığı (dk)": "Check interval (min)",
+    "🔔 Bildirimleri Aç": "🔔 Enable Notifications",
+    "🔕 Bildirimleri Kapat": "🔕 Disable Notifications"
   };
 
   const L = "A-Za-zÇĞİÖŞÜçğıöşü0-9";

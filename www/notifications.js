@@ -12,6 +12,7 @@ const AVNOTIF = (() => {
   const IDS = {
     GPX: 9001,
     NOTAM: 9002,
+    SLOT: 9003,
     REMINDER_MIN: 9100,
     REMINDER_MAX: 9199,
   };
@@ -365,6 +366,52 @@ const AVNOTIF = (() => {
     }
   }
 
+  /* ---------- 2b. Slot Merkezi Durum Değişikliği / Test Bildirimi (ID: 9003) ---------- */
+  async function showSlotAlert(title, body, askPerm) {
+    const ok = await ensureLocalPermission(!!askPerm);
+    if (!ok) return false;
+    const ttl = title || "🚩 AviaDoX · Slot Merkezi";
+    const msg = body || "Slot Merkezi durumu güncellendi.";
+
+    const ln = LN();
+    if (ln) {
+      try {
+        await ln.schedule({
+          notifications: [
+            {
+              id: IDS.SLOT,
+              title: ttl,
+              body: msg,
+              channelId: "aviadox_slot",
+              threadIdentifier: "aviadox-slot",
+              extra: { tab: "sm", type: "slot" },
+            },
+          ],
+        });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      try {
+        if ("serviceWorker" in navigator) {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (reg && typeof reg.showNotification === "function") {
+            await reg.showNotification(ttl, { body: msg, tag: "aviadox-slot", icon: "icons/icon-192.png", data: { tab: "sm" } });
+            return true;
+          }
+        }
+        new Notification(ttl, { body: msg, tag: "aviadox-slot" });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    return false;
+  }
+
   /* ---------- 3. Evrak & Bakım Hatırlatmaları (ID: 9100–9199, diğer bildirimlerden izole) ---------- */
   async function syncExpiryReminders(S) {
     const ln = LN();
@@ -467,6 +514,7 @@ const AVNOTIF = (() => {
     showGpxStatus,
     clearGpxStatus,
     showNotamAlert,
+    showSlotAlert,
     syncExpiryReminders,
     clearReminders,
     getPushToken: () => state.pushToken,
