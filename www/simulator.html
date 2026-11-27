@@ -49,10 +49,17 @@
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     .sim-header {
-      padding-top: calc(env(safe-area-inset-top, 0px) + 0.625rem);
+      padding-top: calc(env(safe-area-inset-top, 0px) + 12px) !important;
+      padding-bottom: 10px !important;
+    }
+    html.sim-embedded .sim-header {
+      padding-top: 10px !important;
     }
     .sim-footer {
-      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+    }
+    html.sim-embedded .sim-footer {
+      padding-bottom: 12px !important;
     }
     .glass-panel {
       background: rgba(15, 23, 42, 0.82);
@@ -119,26 +126,34 @@
     .btn-back-fallback {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
-      padding: 8px 12px;
+      min-height: 44px;
+      padding: 0 16px;
       border-radius: 12px;
-      background: rgba(30, 41, 59, 0.95);
+      background: rgba(30, 41, 59, 0.96);
       color: #f8fafc;
-      border: 1px solid rgba(148, 163, 184, 0.35);
-      font-weight: 600;
-      font-size: 13px;
+      border: 1px solid rgba(251, 191, 36, 0.45);
+      font-weight: 700;
+      font-size: 14px;
       cursor: pointer;
+      touch-action: manipulation;
     }
   </style>
+  <script>
+    if (window.self !== window.top) {
+      document.documentElement.classList.add('sim-embedded');
+    }
+  </script>
 <script src="/_aistudio-iframe.js?v=29045eb3"></script></head>
 <body class="min-h-screen flex flex-col justify-between selection:bg-amber-500/30">
 
   <!-- Üst Başlık / Kokpit Üst Çubuğu -->
-  <header class="glass-panel sim-header sticky top-0 z-40 px-4 py-2.5 border-b border-sky-500/20">
+  <header class="glass-panel sim-header sticky top-0 z-40 px-4 border-b border-sky-500/20">
     <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
-        <button id="btnCloseSim" type="button" class="btn-back-fallback px-3 py-2 rounded-xl bg-slate-800/95 hover:bg-slate-700 text-slate-100 border border-slate-600/60 text-xs sm:text-sm font-semibold transition flex items-center gap-1.5" title="Kayıtlarıma Dön">
-          <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M15 19l-7-7 7-7"/></svg>
+        <button id="btnCloseSim" type="button" class="btn-back-fallback min-h-[44px] px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 border border-amber-400/45 text-sm font-bold transition flex items-center gap-1.5 shrink-0" title="Kayıtlarıma Dön">
+          <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" d="M15 19l-7-7 7-7"/></svg>
           <span>Geri</span>
         </button>
 
