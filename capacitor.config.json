@@ -8,7 +8,8 @@
     "allowNavigation": [
       "*.supabase.co",
       "api.open-meteo.com",
-      "aviationweather.gov"
+      "aviationweather.gov",
+      "shmkapadokya.kapadokya.edu.tr"
     ]
   },
   "ios": {

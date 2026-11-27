@@ -8,44 +8,44 @@ Bu paket, AviaDoX web uygulamasının güvenlik denetiminden geçmiş, gereksiz 
 
 ```text
 AviaDoX-Android-iOS-Paketi/
-├── package.json                        ← Capacitor 6 (Android + iOS + BackgroundGeolocation + Notifications + Supabase)
-├── capacitor.config.json               ← Android/iOS WebView, SplashScreen, Local & Push Notifications ayarları
-├── .github/workflows/build-mobile.yml  ← Tek tıkla hem .apk hem .ipa üreten GitHub Actions iş akışı
+├── package.json                               ← Capacitor 6 (Android + iOS + BackgroundGeolocation + Notifications + Supabase)
+├── capacitor.config.json                      ← Android/iOS WebView, SplashScreen, Local & Push Notifications ayarları
+├── .github/workflows/
+│   ├── build-android-apk.yml                  ← Yalnızca Android (.apk) derleme + splash.gif Android ikonları
+│   └── build-ios-ipa.yml                      ← Yalnızca iOS (.ipa) derleme + splash.gif 1024×1024 iOS ikonu
 ├── android-config/
-│   └── AndroidManifest.additions.xml   ← Android 13/14+ arka plan konum & ön plan servis izinleri
+│   └── AndroidManifest.additions.xml          ← Android 13/14+ arka plan konum & ön plan servis izinleri
 ├── ios-config/
-│   ├── Info.plist.additions.xml        ← iOS UIBackgroundModes (location + remote-notification) & Live Activities
-│   ├── AppDelegate.swift               ← APNs + LocalNotifications köprüsü
-│   └── FlightLiveActivity.swift        ← Opsiyonel iOS 16.2+ Dynamic Island / Kilit Ekranı Canlı Etkinlik
-└── www/                                ← Tüm temizlenmiş ve çevrimdışı hazır web dosyaları
-    ├── index.html                      ← #splash GIF katmanı + yerel Supabase yedeği + notifications.js
-    ├── splash.gif                      ← Açılış animasyonlu AviaDoX GIF logosu (kendi GIF'inizle değiştirebilirsiniz)
-    ├── styles.css                      ← #splash & çevrimdışı durum çubuğu stilleri
-    ├── config.js                       ← Supabase / VAPID / GDPR-KVKK yapılandırması
-    ├── notifications.js                ← Kilit ekranı GPX (Süre · İrtifa · Hız · Yön°) + NOTAM + Hatırlatma + Push
-    ├── app.js                          ← Güvenlik düzeltmeleri, çevrimdışı mod ve tüm iş akışları
-    ├── flightlog.js                    ← Arka plan GPX kaydı, kilit ekranı güncellemesi, çevrimdışı IndexedDB
-    ├── slot.js                         ← APK/IPA yerel Push desteği + çevrimdışı önbellek
-    ├── weather.js                      ← Null güvenli meteoroloji + çevrimdışı önbellek
-    ├── i18n.js                         ← iOS <16.4 uyumlu çeviri motoru + karanlık mod dinleyici
-    ├── privacy.js                      ← TR/EN gizlilik politikası (arka plan GPX açıklamalı)
-    ├── gizlilik.html                   ← Safe Area uyumlu yasal metin sayfası
-    ├── sw.js                           ← Çevrimdışı önbellekli Service Worker (Web/PWA için)
-    └── manifest.webmanifest            ← PWA manifest
+│   ├── Info.plist.additions.xml               ← iOS UIBackgroundModes (location + remote-notification) & Live Activities
+│   ├── AppDelegate.swift                      ← APNs + LocalNotifications köprüsü
+│   └── FlightLiveActivity.swift               ← Opsiyonel iOS 16.2+ Dynamic Island / Kilit Ekranı Canlı Etkinlik
+└── www/                                       ← Tüm temizlenmiş ve çevrimdışı hazır web dosyaları
+    ├── index.html                             ← #splash GIF katmanı + yerel Supabase yedeği + notifications.js
+    ├── splash.gif                             ← Açılış GIF logosu (APK & IPA uygulama ikonu bundan otomatik üretilir)
+    ├── styles.css                             ← iPhone safe-area/yapışkan üst çubuk, #splash & çevrimdışı stilleri
+    ├── config.js                              ← Supabase / VAPID / GDPR-KVKK yapılandırması
+    ├── notifications.js                       ← Kilit ekranı GPX (9001), NOTAM (9002), Slot (9003) & Hatırlatma (9100–9199)
+    ├── app.js                                 ← Güvenlik düzeltmeleri, çevrimdışı giriş, Ayarlar > Slot Kontrol paneli
+    ├── flightlog.js                           ← Arka plan GPX kaydı, düzeltilmiş gidiş yönü (000°–359°), çevrimdışı senkron
+    ├── slot.js                                ← Gün doğumu bazlı özelleştirilebilir Slot kontrolü + yerel mobil bildirim + Test
+    ├── weather.js                             ← Null güvenli meteoroloji + çevrimdışı önbellek
+    ├── i18n.js                                ← iOS <16.4 uyumlu çeviri motoru + karanlık mod dinleyici
+    ├── privacy.js                             ← TR/EN gizlilik politikası (arka plan GPX açıklamalı)
+    ├── gizlilik.html                          ← Safe Area uyumlu yasal metin sayfası
+    ├── sw.js                                  ← Çevrimdışı önbellekli Service Worker (Web/PWA için)
+    └── manifest.webmanifest                   ← PWA manifest
 ```
 
 ---
 
-## Yöntem 1: GitHub Actions ile Otomatik .apk + .ipa Üretme (Önerilen — Mac Gerekmez)
+## Yöntem 1: GitHub Actions ile Ayrı .apk ve .ipa Üretme (Önerilen — Mac Gerekmez)
 
-Eski projenizdeki `ios_build.yml` dosyası **Flutter** içindi ve bu Vanilla JS / Capacitor projesinde çalışmaz. Yerine eklenen `.github/workflows/build-mobile.yml` dosyasını kullanın:
+Android ve iOS derlemeleri birbirinden tamamen bağımsız **iki ayrı iş akışı dosyasına** ayrılmıştır:
 
-1. ZIP paketini yeni veya mevcut bir GitHub deposunun kök dizinine yükleyin (`.github/workflows/build-mobile.yml` dahil).
-2. GitHub'da **Actions** sekmesini açın → **AviaDoX Android (.apk) ve iOS (.ipa) Derleme** iş akışını seçin → **Run workflow** butonuna basın.
-3. İşlem tamamlandığında **Artifacts** bölümünden:
-   - **`AviaDoX-Android-APK`** (`app-debug.apk` — Android telefona doğrudan kurulabilir)
-   - **`AviaDoX-iOS-IPA`** (`AviaDoX-unsigned.ipa` — AltStore / Sideloadly ile imzalanabilir veya Apple Developer hesabınızla App Store/TestFlight'a yüklenebilir)
-   dosyalarını indirin.
+1. ZIP paketini GitHub deponuzun kök dizinine yükleyin (eski `ios_build.yml`, `build-mobile.yml` veya `slot-watch.yml` varsa silin).
+2. **Yalnızca Android `.apk` için:** **Actions → AviaDoX Android (.apk) Derleme → Run workflow** → Artifacts'tan **`AviaDoX-Android-APK`** (`app-debug.apk`) dosyasını indirin.
+3. **Yalnızca iOS `.ipa` için:** **Actions → AviaDoX iOS (.ipa) Derleme → Run workflow** → Artifacts'tan **`AviaDoX-iOS-IPA`** (`AviaDoX-unsigned.ipa`) dosyasını indirin.
+4. **Slot Merkezi Kontrolü (Uygulama İçinde):** Harici bir sunucu veya ayrı uygulama gerekmez. AviaDoX uygulaması doğrudan `shmkapadokya.kapadokya.edu.tr` üzerinden kontrol yapar; **Ayarlar → Slot Merkezi Kontrolü** bölümünden otomatik kontrolü açıp kapatabilir, kontrol dakikasını değiştirebilir ve **🔔 Test Bildirimi** ile telefonunuzda bildirimi anında sınayabilirsiniz.
 
 ---
 
